@@ -115,6 +115,8 @@ int pseudo_mm_rdma_pf_handle(struct page *page, pgoff_t remote_pgoff)
 
 unsigned long register_backend_dax_device(int fd)
 {
+	return 0;
+	
 	struct file *backend_file;
 	unsigned long ret;
 
@@ -242,6 +244,7 @@ void put_pseudo_mm_with_id(int id)
 		put_pseudo_mm(pseudo_mm);
 }
 
+//vma 
 unsigned long pseudo_mm_add_map(int id, unsigned long start, unsigned long size,
 				unsigned long prot, unsigned long flags, int fd,
 				pgoff_t pgoff)

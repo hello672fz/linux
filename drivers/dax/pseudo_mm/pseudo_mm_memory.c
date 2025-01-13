@@ -10,6 +10,7 @@
 #include <linux/spinlock.h>
 #include <linux/pseudo_mm.h>
 #include <linux/mm.h>
+#include <asm/io.h>
 
 #include "../bus.h"
 #include "../dax-private.h"
@@ -27,7 +28,7 @@ static unsigned long __setup_pt_for_vma_dax(struct pseudo_mm *pseudo_mm,
 					    unsigned long nr_pages,
 					    pgoff_t pgoff)
 {
-	struct pseudo_mm_backend *backend = pseudo_mm_get_backend();
+	// struct pseudo_mm_backend *backend = pseudo_mm_get_backend();
 	struct dev_dax *dev_dax;
 	struct pseudo_mm_pin_pages *pin_page = NULL;
 	struct dev_pagemap *pgmap = NULL;
@@ -38,24 +39,25 @@ static unsigned long __setup_pt_for_vma_dax(struct pseudo_mm *pseudo_mm,
 	unsigned long ret = 0, i, vaddr;
 	long nr_pin_pages = 0;
 	vm_fault_t vmf_ret;
+	struct page *p;
 
-	if (!backend->filp) {
-		pr_err("do not register dax backend for pseudo_mm\n");
-		return -ENOENT;
-	}
+	// if (!backend->filp) {
+	// 	pr_err("do not register dax backend for pseudo_mm\n");
+	// 	return -ENOENT;
+	// }
 
-	dev_dax = backend->filp->private_data;
+	// dev_dax = backend->filp->private_data;
 
 	pages = kvmalloc_array(nr_pages, sizeof(struct page *), GFP_KERNEL);
 	if (!pages)
 		return -ENOMEM;
 
 	id = dax_read_lock();
-	if (dev_dax->align != PAGE_SIZE) {
-		pr_warn("dax alignment (%#x) != PAGE_SIZE\n", dev_dax->align);
-		ret = -EIO;
-		goto failed;
-	}
+	// if (dev_dax->align != PAGE_SIZE) {
+	// 	pr_warn("dax alignment (%#x) != PAGE_SIZE\n", dev_dax->align);
+	// 	ret = -EIO;
+	// 	goto failed;
+	// }
 
 	// Map pages to dax device one by one
 	// since insert_mixed api is insert one pfn at a time.
@@ -63,13 +65,29 @@ static unsigned long __setup_pt_for_vma_dax(struct pseudo_mm *pseudo_mm,
 	// called on prepare phase, it will not effect the attach performance.
 	for (i = 0; i < nr_pages; i++) {
 		vaddr = start + (i << PAGE_SHIFT);
-		phys = dax_pgoff_to_phys(dev_dax, pgoff + i, PAGE_SIZE);
+		// TODO
+		// phys = dax_pgoff_to_phys(dev_dax, pgoff + i, PAGE_SIZE);
+		// p = alloc_pages_node(0, _GFP_ZERO, 1);
+		// if (!p)return NULL;
+		// pages = page_address(p);	
+		// phys = virt_to_phys(pages);
+		// p = alloc_pages(GFP_KERNEL | __GFP_ZERO, 1);
+		p = alloc_pages_node(0, __GFP_ZERO, 0);
+		if (!p) {
+			pr_err("unable to allocate PAACT/SPAACT/OMT block\n");
+			ret = -ENOMEM;
+			goto failed;
+		}
+		phys = page_to_phys(p);
+
+
 		if (phys == -1) {
 			pr_warn("pgoff_to_phys(%ld) failed\n", pgoff + i);
 			ret = -EFAULT;
 			goto failed;
 		}
 		pfn = phys_to_pfn_t(phys, PFN_DEV | PFN_MAP);
+		pr_info("pfn = %ld\n", pfn);
 
 		vmf_ret = pseudo_mm_insert_dax(vma, vaddr, pfn);
 		if (unlikely(vmf_ret & VM_FAULT_ERROR)) {
