@@ -2,7 +2,7 @@
 
 ## start qemu
 sudo /opt/qemu-2024-06-21/bin/qemu-system-x86_64 \
--m 4G \
+-m 32G \
 -nographic \
 -kernel arch/x86/boot/bzImage \
 -append "console=ttyS0 root=/dev/sda rw init=/lib/systemd/systemd nokaslr" \

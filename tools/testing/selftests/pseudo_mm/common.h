@@ -124,6 +124,7 @@ int setup_anon_map_pt(int fd, int pseudo_mm_id, unsigned long start,
 	int ret;
 
 	param.id = pseudo_mm_id;
+	param.numaid = 0;
 	param.start = start;
 	param.size = size;
 	param.pgoff = pgoff;

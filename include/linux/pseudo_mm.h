@@ -104,7 +104,7 @@ unsigned long pseudo_mm_add_map(int id, unsigned long start, unsigned long size,
  * *Note*: The [start, start + size) should not exceed the boundary of single
  * vma. Return 0 when succeed.
  */
-unsigned long pseudo_mm_setup_pt(int id, unsigned long start,
+unsigned long pseudo_mm_setup_pt(int id, int numaid, unsigned long start,
 				 unsigned long size, pgoff_t pgoff,
 				 enum pseudo_mm_pt_type type);
 

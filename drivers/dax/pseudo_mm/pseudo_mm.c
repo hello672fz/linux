@@ -84,7 +84,7 @@ static inline long _pseudo_mm_setup_pt(void *__user args)
 	err = copy_from_user(&param, args, sizeof(param));
 	if (err)
 		return err;
-	err = pseudo_mm_setup_pt(param.id, param.start, param.size, param.pgoff,
+	err = pseudo_mm_setup_pt(param.id, param.numaid, param.start, param.size, param.pgoff,
 				 param.type);
 	return err;
 }

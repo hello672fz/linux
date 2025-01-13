@@ -24,6 +24,7 @@ struct pseudo_mm_add_map_param {
 
 struct pseudo_mm_setup_pt_param {
 	int id;
+	int numaid;
 	/* start virtual address */
 	unsigned long start;
 	/* size of memory area needed to be setup */

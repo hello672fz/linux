@@ -26,7 +26,8 @@ static unsigned long __setup_pt_for_vma_dax(struct pseudo_mm *pseudo_mm,
 					    struct vm_area_struct *vma,
 					    unsigned long start,
 					    unsigned long nr_pages,
-					    pgoff_t pgoff)
+					    pgoff_t pgoff,
+						int numaid)
 {
 	// struct pseudo_mm_backend *backend = pseudo_mm_get_backend();
 	struct dev_dax *dev_dax;
@@ -40,6 +41,7 @@ static unsigned long __setup_pt_for_vma_dax(struct pseudo_mm *pseudo_mm,
 	long nr_pin_pages = 0;
 	vm_fault_t vmf_ret;
 	struct page *p;
+	int nid=numaid;
 
 	// if (!backend->filp) {
 	// 	pr_err("do not register dax backend for pseudo_mm\n");
@@ -72,7 +74,7 @@ static unsigned long __setup_pt_for_vma_dax(struct pseudo_mm *pseudo_mm,
 		// pages = page_address(p);	
 		// phys = virt_to_phys(pages);
 		// p = alloc_pages(GFP_KERNEL | __GFP_ZERO, 1);
-		p = alloc_pages_node(0, __GFP_ZERO, 0);
+		p = alloc_pages_node(nid, __GFP_ZERO, 0);
 		if (!p) {
 			pr_err("unable to allocate PAACT/SPAACT/OMT block\n");
 			ret = -ENOMEM;
@@ -193,7 +195,7 @@ out:
 	return ret;
 }
 
-unsigned long pseudo_mm_setup_pt(int id, unsigned long start,
+unsigned long pseudo_mm_setup_pt(int id, int numaid,unsigned long start,
 				 unsigned long size, pgoff_t pgoff,
 				 enum pseudo_mm_pt_type type)
 {
@@ -233,7 +235,7 @@ unsigned long pseudo_mm_setup_pt(int id, unsigned long start,
 	switch (type) {
 	case DAX_MEM:
 		ret = __setup_pt_for_vma_dax(pseudo_mm, vma, start,
-					     size >> PAGE_SHIFT, pgoff);
+					     size >> PAGE_SHIFT, pgoff,numaid);
 		break;
 	case RDMA_MEM:
 		ret = __setup_pt_for_vma_rdma(pseudo_mm, vma, start,
