@@ -5,6 +5,8 @@
 
 #define pr_fmt(fmt) "pseudo_mm_driver:%s: " fmt, __func__
 
+#include <linux/sched/mm.h>
+#include <linux/mm.h>		/* for GFP_ATOMIC */
 #include <linux/device.h>
 #include <linux/fs.h>
 #include <linux/file.h>
@@ -12,6 +14,7 @@
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/pseudo_mm.h>
+#include <asm/io.h>
 
 #include "pseudo_mm_memory.h"
 #include "pseudo_mm_ioctl.h"
@@ -84,8 +87,10 @@ static inline long _pseudo_mm_setup_pt(void *__user args)
 	err = copy_from_user(&param, args, sizeof(param));
 	if (err)
 		return err;
+//  err = pseudo_mm_setup_pt(param.id, param.start, param.size, param.pgoff,
+// 			 param.type);
 	err = pseudo_mm_setup_pt(param.id, param.start, param.size, param.pgoff,
-				 param.type);
+				 DAX_MEM);
 	return err;
 }
 
@@ -126,11 +131,24 @@ static inline long _pseudo_mm_pf_stat(void *__user args)
 	return err;
 }
 
+
+static inline long _register_backend_memory(void *__user args)
+{
+	struct pseudo_mm_register_param param;
+	unsigned long err;
+	err = copy_from_user(&param, args, sizeof(param));
+	if (err)
+		return err;
+	
+	return register_backend_memory(param.node, param.order);
+}
+
 static long pseudo_mm_unlocked_ioctl(struct file *filp, unsigned int cmd,
 				     unsigned long args)
 {
 	int pseudo_mm_id, fd;
 	long err = 0;
+	long phy_addr = 0;
 
 	// all ioctl in pseudo_mm need args
 	if (!args)
@@ -138,10 +156,7 @@ static long pseudo_mm_unlocked_ioctl(struct file *filp, unsigned int cmd,
 
 	switch (cmd) {
 	case PSEUDO_MM_IOC_REGISTER:
-		err = copy_from_user(&fd, (const void *)args, sizeof(fd));
-		if (err)
-			return err;
-		err = register_backend_dax_device(fd);
+		err = _register_backend_memory((void *)args);
 		if (err)
 			return err;
 		break;
@@ -184,6 +199,13 @@ static long pseudo_mm_unlocked_ioctl(struct file *filp, unsigned int cmd,
 		break;
 	case PSEUDO_MM_IOC_PF_STAT:
 		err = _pseudo_mm_pf_stat((void *)args);
+		if (err)
+			return err;
+		break;
+	case PSEUDO_MM_IOC_PHY_ADDR:
+		phy_addr = pseudo_mm_phy_addr();
+		err = copy_to_user((void *)args, &phy_addr,
+				   sizeof(phy_addr));
 		if (err)
 			return err;
 		break;

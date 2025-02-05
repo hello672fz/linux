@@ -22,6 +22,15 @@ struct pseudo_mm_add_map_param {
 	off_t offset;
 };
 
+struct pseudo_mm_register_param {
+	int node; // numa node id
+	int order; // specify the number of pre-allocated frames (i.e., physical memory page), 2^order
+};
+
+struct pseudo_mm_phy_addr_param {
+	unsigned long phy_addr;
+};
+
 struct pseudo_mm_setup_pt_param {
 	int id;
 	/* start virtual address */
@@ -71,5 +80,7 @@ struct pseudo_mm_pf_stat_param {
 	_IOW(PSEUDO_MM_IOC_MAGIC, 0x06, struct pseudo_mm_bring_back_param *)
 #define PSEUDO_MM_IOC_PF_STAT \
 	_IOWR(PSEUDO_MM_IOC_MAGIC, 0x07, struct pseudo_mm_pf_stat_param *)
+#define PSEUDO_MM_IOC_PHY_ADDR \
+	_IOWR(PSEUDO_MM_IOC_MAGIC, 0x08, struct pseudo_mm_phy_addr_param *)
 
 #endif

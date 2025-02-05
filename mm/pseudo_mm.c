@@ -27,7 +27,7 @@
 DEFINE_XARRAY_ALLOC1(pseudo_mm_array);
 /* kmemcache for pseudo_mm struct */
 static struct kmem_cache *pseudo_mm_cachep;
-static struct pseudo_mm_backend backend;
+static struct pseudo_mm_backend backend = {.filp = NULL, .page = NULL};
 static pseudo_mm_rdma_pf_ops_t *pseudo_mm_rdma_pf_ops = NULL;
 static int __pseudo_mm_rdma_prefer_node = NUMA_NO_NODE;
 
@@ -143,6 +143,50 @@ err:
 	fput(backend_file);
 	return ret;
 }
+
+unsigned long register_backend_memory(int node, int order)
+{	
+	struct page *page;
+	u64 base_pfn, phys_addr;
+
+	if(backend.page){
+		free_page((unsigned long)backend.page);
+		pr_warn("pseudo_mm backend memory has changed\n");
+		backend.page = NULL;
+	}
+
+	page = alloc_pages_node(node, GFP_KERNEL, order);
+	if (!page) {
+		pr_err("alloc_page failed\n");
+		return -ENOMEM;
+	}
+	backend.page = page;
+
+	base_pfn = page_to_pfn(page);
+	phys_addr = base_pfn << PAGE_SHIFT;
+
+	pr_info("alloc %ld pages from node numa %d, base_phy_addr: %llx\n", 1UL << order, node,phys_addr);
+	
+	return 0;
+}
+
+u64 pseudo_mm_phy_addr(void)
+{	
+	struct page *page;
+	u64 base_pfn, phys_addr;
+
+	if(!backend.page){
+		return -1;
+	}
+
+	page = backend.page;
+	base_pfn = page_to_pfn(page);
+	phys_addr = base_pfn << PAGE_SHIFT;
+	
+	return phys_addr;
+}
+
+
 
 inline bool pseudo_mm_rdma_pf_handler_enable(void)
 {

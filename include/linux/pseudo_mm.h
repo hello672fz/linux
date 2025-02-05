@@ -35,7 +35,8 @@ struct pseudo_mm_unmap_args {
 enum pseudo_mm_pt_type;
 
 struct pseudo_mm_backend {
-	struct file *filp;
+	struct file *filp; // discard
+	struct page *page;
 };
 
 // read single page from remote
@@ -49,7 +50,11 @@ typedef int (pseudo_mm_rdma_pf_ops_t)(struct page *page, pgoff_t rpgoff);
 
 /* return 0 if succeed */
 unsigned long register_backend_dax_device(int fd);
+unsigned long register_backend_memory(int node, int order);
 inline struct pseudo_mm_backend *pseudo_mm_get_backend(void);
+
+u64 pseudo_mm_phy_addr(void);
+
 
 /*
  * Register page fault handler for rdma-backed pages in pseudo_mm
