@@ -28,7 +28,7 @@ static unsigned long __setup_pt_for_vma_dax(struct pseudo_mm *pseudo_mm,
 					    pgoff_t pgoff)
 {
 	struct pseudo_mm_backend *backend = pseudo_mm_get_backend();
-	struct dev_dax *dev_dax;
+	// struct dev_dax *dev_dax;
 	struct pseudo_mm_pin_pages *pin_page = NULL;
 	struct dev_pagemap *pgmap = NULL;
 	struct page *page, **pages;
@@ -39,23 +39,23 @@ static unsigned long __setup_pt_for_vma_dax(struct pseudo_mm *pseudo_mm,
 	long nr_pin_pages = 0;
 	vm_fault_t vmf_ret;
 
-	if (!backend->filp) {
-		pr_err("do not register dax backend for pseudo_mm\n");
+	if (!backend->page) {
+		pr_err("do not register mem backend for pseudo_mm\n");
 		return -ENOENT;
 	}
 
-	dev_dax = backend->filp->private_data;
+	// dev_dax = backend->filp->private_data;
 
 	pages = kvmalloc_array(nr_pages, sizeof(struct page *), GFP_KERNEL);
 	if (!pages)
 		return -ENOMEM;
 
-	id = dax_read_lock();
-	if (dev_dax->align != PAGE_SIZE) {
-		pr_warn("dax alignment (%#x) != PAGE_SIZE\n", dev_dax->align);
-		ret = -EIO;
-		goto failed;
-	}
+	// id = dax_read_lock();
+	// if (dev_dax->align != PAGE_SIZE) {
+	// 	pr_warn("dax alignment (%#x) != PAGE_SIZE\n", dev_dax->align);
+	// 	ret = -EIO;
+	// 	goto failed;
+	// }
 
 	// Map pages to dax device one by one
 	// since insert_mixed api is insert one pfn at a time.
@@ -63,7 +63,8 @@ static unsigned long __setup_pt_for_vma_dax(struct pseudo_mm *pseudo_mm,
 	// called on prepare phase, it will not effect the attach performance.
 	for (i = 0; i < nr_pages; i++) {
 		vaddr = start + (i << PAGE_SHIFT);
-		phys = dax_pgoff_to_phys(dev_dax, pgoff + i, PAGE_SIZE);
+		// phys = dax_pgoff_to_phys(dev_dax, pgoff + i, PAGE_SIZE);
+		phys = (page_to_pfn(backend->page) + pgoff + i) << PAGE_SHIFT;
 		if (phys == -1) {
 			pr_warn("pgoff_to_phys(%ld) failed\n", pgoff + i);
 			ret = -EFAULT;
@@ -79,13 +80,14 @@ static unsigned long __setup_pt_for_vma_dax(struct pseudo_mm *pseudo_mm,
 			goto failed;
 		}
 		// BEGIN imitate pin_user_pages()
-		pgmap = get_dev_pagemap(pfn_t_to_pfn(pfn), pgmap);
-		WARN_ON(!pgmap);
+		// pgmap = get_dev_pagemap(pfn_t_to_pfn(pfn), pgmap);
+		// WARN_ON(!pgmap);
 		page = pfn_t_to_page(pfn);
-		if (unlikely(!try_grab_page(page, FOLL_PIN))) {
-			ret = -ENOMEM;
-			goto failed;
-		}
+
+		// if (unlikely(!try_grab_page(page, FOLL_PIN))) {
+		// 	ret = -ENOMEM;
+		// 	goto failed;
+		// }
 		ret = arch_make_page_accessible(page);
 		if (ret) {
 			unpin_user_page(page);
@@ -116,9 +118,9 @@ static unsigned long __setup_pt_for_vma_dax(struct pseudo_mm *pseudo_mm,
 #endif
 
 out:
-	if (pgmap)
-		put_dev_pagemap(pgmap);
-	dax_read_unlock(id);
+	// if (pgmap) 
+	// 	put_dev_pagemap(pgmap);
+	// dax_read_unlock(id);
 	return ret;
 
 failed:

@@ -1,3 +1,0 @@
-dd if=/dev/zero of=/dev/shm/dax0.0 bs=4096 count=1
-
-https://bakhi.github.io/devmem/

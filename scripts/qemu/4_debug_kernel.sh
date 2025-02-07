@@ -11,4 +11,4 @@ sudo /opt/qemu-2024-06-21/bin/qemu-system-x86_64 \
 -initrd $1/initramfs.igz \
 -drive format=raw,file=$1/rootfs.img \
 -S \
--gdb tcp::1240
+-gdb tcp::1238

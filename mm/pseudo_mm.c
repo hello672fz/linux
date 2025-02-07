@@ -27,7 +27,7 @@
 DEFINE_XARRAY_ALLOC1(pseudo_mm_array);
 /* kmemcache for pseudo_mm struct */
 static struct kmem_cache *pseudo_mm_cachep;
-static struct pseudo_mm_backend backend = {.filp = NULL, .page = NULL};
+static struct pseudo_mm_backend backend = {.filp = NULL, .page = NULL, .nr_pages = 0};
 static pseudo_mm_rdma_pf_ops_t *pseudo_mm_rdma_pf_ops = NULL;
 static int __pseudo_mm_rdma_prefer_node = NUMA_NO_NODE;
 
@@ -147,20 +147,27 @@ err:
 unsigned long register_backend_memory(int node, int order)
 {	
 	struct page *page;
+	void *virt_addr;
 	u64 base_pfn, phys_addr;
+	u64 nr_pages;
 
 	if(backend.page){
-		free_page((unsigned long)backend.page);
+		base_pfn = page_to_pfn(backend.page);
+		nr_pages = backend.nr_pages;
+		free_contig_range(base_pfn, backend.nr_pages);
 		pr_warn("pseudo_mm backend memory has changed\n");
 		backend.page = NULL;
+		backend.nr_pages = 0;
 	}
 
-	page = alloc_pages_node(node, GFP_KERNEL, order);
-	if (!page) {
-		pr_err("alloc_page failed\n");
-		return -ENOMEM;
+	nr_pages = 1UL << order;
+	page = alloc_contig_pages(nr_pages, GFP_KERNEL, node, NULL);
+	if (!page){
+		pr_err("alloc pages failed\n");
+		return -1;	
 	}
 	backend.page = page;
+	backend.nr_pages = (1UL << order);
 
 	base_pfn = page_to_pfn(page);
 	phys_addr = base_pfn << PAGE_SHIFT;

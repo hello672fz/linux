@@ -37,6 +37,7 @@ enum pseudo_mm_pt_type;
 struct pseudo_mm_backend {
 	struct file *filp; // discard
 	struct page *page;
+	u32 nr_pages;
 };
 
 // read single page from remote
