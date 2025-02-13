@@ -10,6 +10,8 @@
 #define PAGE_SHIFT 12
 #define PAGE_SIZE (1 << PAGE_SHIFT)
 
+pid_t pid;
+
 int add_mmap_to(int pseudo_mm_fd, int pseudo_mm_id, unsigned long start, unsigned long end, unsigned long flags, int fd, off_t offset)
 {
 	struct pseudo_mm_add_map_param add_map_param = {
@@ -40,7 +42,8 @@ int set_map_pt(int pseudo_mm_fd, int pseudo_mm_id, unsigned long start, unsigned
 }
 
 int attach_to(int pseudo_mm_fd, int pseudo_mm_id){
-	pid_t pid = getpid();
+
+	pid = getpid();
 
 	struct pseudo_mm_attach_param attach_param = {
 		.pid = pid,
@@ -48,6 +51,18 @@ int attach_to(int pseudo_mm_fd, int pseudo_mm_id){
 	};
 
 	int ret = ioctl(pseudo_mm_fd, PSEUDO_MM_IOC_ATTACH, (void *)(&attach_param));
+	return ret;
+}
+
+int getpte(int pseudo_mm_fd, unsigned long start, unsigned long size)
+{
+	struct pseudo_mm_getpte_param getpte_param = {
+		.pid = pid,
+		.start = start,
+		.size = size
+	};
+
+	int ret = ioctl(pseudo_mm_fd, PSEUDO_MM_IOC_GETPTE, (void *)(&getpte_param));
 	return ret;
 }
 
@@ -127,6 +142,13 @@ int main() {
     ret = attach_to(pseudo_mm_fd, pseudo_mm_id);
     if(ret){
         perror("attach failed");
+        return -1;
+    }
+
+    // step 5: getpte
+    ret = getpte(pseudo_mm_fd, start, PAGE_SIZE);
+    if(ret){
+        perror("get pte failed");
         return -1;
     }
 

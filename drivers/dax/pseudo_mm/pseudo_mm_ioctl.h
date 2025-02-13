@@ -43,6 +43,17 @@ struct pseudo_mm_setup_pt_param {
 	enum pseudo_mm_pt_type type;
 };
 
+
+struct pseudo_mm_getpte_param {
+	pid_t pid;
+	// unsigned long nr_pages;
+	/* start virtual address */
+	unsigned long start;
+	/* size of memory area needed to be setup */
+	unsigned long size;
+};
+
+
 struct pseudo_mm_bring_back_param {
 	int id;
 	/* start virtual address */
@@ -82,5 +93,7 @@ struct pseudo_mm_pf_stat_param {
 	_IOWR(PSEUDO_MM_IOC_MAGIC, 0x07, struct pseudo_mm_pf_stat_param *)
 #define PSEUDO_MM_IOC_PHY_ADDR \
 	_IOWR(PSEUDO_MM_IOC_MAGIC, 0x08, struct pseudo_mm_phy_addr_param *)
+#define PSEUDO_MM_IOC_GETPTE \
+	_IOWR(PSEUDO_MM_IOC_MAGIC, 0x09, struct pseudo_mm_getpte_param *)
 
 #endif

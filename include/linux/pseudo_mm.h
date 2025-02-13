@@ -135,6 +135,8 @@ unsigned long pseudo_mm_bring_back(int id, unsigned long start,
  * @id: pseudo_mm_id
  */
 unsigned long pseudo_mm_attach(pid_t pid, int id);
+unsigned long pseudo_mm_getpte(pid_t pid, unsigned long start,unsigned long size);
+
 
 /* debug purpose */
 void debug_weird_page(struct page *page, int expected_mapcount);

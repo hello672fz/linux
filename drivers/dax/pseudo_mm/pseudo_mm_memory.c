@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * This module provides the feature to manage memory on the dax devcie
+ * This module provides the feature to manage memory on the dax device
  */
 #define pr_fmt(fmt) "pseudo_mm_memory:%s: " fmt, __func__
 

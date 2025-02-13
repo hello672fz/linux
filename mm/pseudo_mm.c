@@ -15,6 +15,7 @@
 #include <linux/fs.h>
 #include <linux/shmem_fs.h>
 #include <linux/init.h>
+#include <linux/namei.h>
 
 #define stringify__(x) #x
 #define stringify_(x) stringify__(x)
@@ -638,6 +639,89 @@ unsigned long pseudo_mm_attach(pid_t pid, int id)
 	mmput(tsk_mm);
 
 	return err ? err : 0;
+}
+
+unsigned long pseudo_mm_getpte(pid_t pid, unsigned long start, unsigned long size) {
+    struct task_struct *task;
+    struct mm_struct *mm;
+    pgd_t *pgd;
+    p4d_t *p4d;
+    pud_t *pud;
+    pmd_t *pmd;
+    pte_t *pte;
+    unsigned long vaddr,i,len;
+    struct file *file;
+    loff_t pos = 0;
+    char *log;
+	unsigned long nr_pages=size >> PAGE_SHIFT;
+
+    task = pid_task(find_vpid(pid), PIDTYPE_PID);
+    if (!task) {
+		pr_warn("cannot find pte_task with pid %d\n", pid);
+		return -ENOENT;
+	}
+
+    mm = get_task_mm(task);
+    if (!mm) {
+		pr_warn("Failed to get pte_mm_struct for PID %d\n", pid);
+		return -ENOENT;
+    }
+
+    file = filp_open("/tmp/pte_log.txt", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (IS_ERR(file)) {
+        pr_warn("Failed to open file /tmp/pte_log.txt\n");
+        mmput(mm);
+        return -ENOENT;
+    }
+
+    log = kmalloc(256, GFP_KERNEL);
+    if (!log) {
+        pr_warn("Failed to allocate memory for log buffer\n");
+        filp_close(file, NULL);
+        mmput(mm);
+        return -ENOENT;
+    }
+
+    for (i = 0; i < nr_pages; i++) {
+        vaddr = start + (i << PAGE_SHIFT);
+
+        pgd = pgd_offset(mm, vaddr);
+        if (pgd_none(*pgd) || pgd_bad(*pgd))
+            continue;
+
+        p4d = p4d_offset(pgd, vaddr);
+        if (p4d_none(*p4d) || p4d_bad(*p4d))
+            continue;
+
+        pud = pud_offset(p4d, vaddr);
+        if (pud_none(*pud) || pud_bad(*pud))
+            continue;
+
+        pmd = pmd_offset(pud, vaddr);
+        if (pmd_none(*pmd) || pmd_bad(*pmd))
+            continue;
+
+        pte = pte_offset_map(pmd, vaddr);
+        if (!pte || pte_none(*pte)) {
+            pte_unmap(pte);
+            continue;
+        }
+
+        unsigned long pfn = pte_pfn(*pte);
+        pgprot_t prot = pte_pgprot(*pte);
+
+        len = snprintf(log, 256, "Vaddr: %lx, PFN: %lx, Prot: %lx\n", vaddr, pfn, pgprot_val(prot));
+        kernel_write(file, log, len, &pos);
+
+        pr_info("Vaddr: %lx, PFN: %lx, Prot: %lx\n", vaddr, pfn, pgprot_val(prot));
+
+        pte_unmap(pte);
+    }
+
+    kfree(log);
+    filp_close(file, NULL);
+    mmput(mm);
+	return 0;
 }
 
 bool vma_is_pseudo_anon_shared(struct vm_area_struct *vma)
