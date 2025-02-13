@@ -57,9 +57,7 @@ int attach_to(int pseudo_mm_fd, int pseudo_mm_id){
 int getpte(int pseudo_mm_fd, unsigned long start, unsigned long size)
 {
 	struct pseudo_mm_getpte_param getpte_param = {
-		.pid = pid,
-		.start = start,
-		.size = size
+		.pid = pid
 	};
 
 	int ret = ioctl(pseudo_mm_fd, PSEUDO_MM_IOC_GETPTE, (void *)(&getpte_param));

@@ -641,31 +641,122 @@ unsigned long pseudo_mm_attach(pid_t pid, int id)
 	return err ? err : 0;
 }
 
-unsigned long pseudo_mm_getpte(pid_t pid, unsigned long start, unsigned long size) {
+// unsigned long pseudo_mm_getpte(pid_t pid, unsigned long start, unsigned long size) {
+//     struct task_struct *task;
+//     struct mm_struct *mm;
+//     pgd_t *pgd;
+//     p4d_t *p4d;
+//     pud_t *pud;
+//     pmd_t *pmd;
+//     pte_t *pte;
+//     unsigned long vaddr,i,len;
+//     struct file *file;
+//     loff_t pos = 0;
+//     char *log;
+// 	unsigned long nr_pages=size >> PAGE_SHIFT;
+
+//     task = pid_task(find_vpid(pid), PIDTYPE_PID);
+//     if (!task) {
+// 		pr_warn("cannot find pte_task with pid %d\n", pid);
+// 		return -ENOENT;
+// 	}
+
+//     mm = get_task_mm(task);
+//     if (!mm) {
+// 		pr_warn("Failed to get pte_mm_struct for PID %d\n", pid);
+// 		return -ENOENT;
+//     }
+
+//     file = filp_open("/tmp/pte_log.txt", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+//     if (IS_ERR(file)) {
+//         pr_warn("Failed to open file /tmp/pte_log.txt\n");
+//         mmput(mm);
+//         return -ENOENT;
+//     }
+
+//     log = kmalloc(256, GFP_KERNEL);
+//     if (!log) {
+//         pr_warn("Failed to allocate memory for log buffer\n");
+//         filp_close(file, NULL);
+//         mmput(mm);
+//         return -ENOENT;
+//     }
+
+//     for (i = 0; i < nr_pages; i++) {
+//         vaddr = start + (i << PAGE_SHIFT);
+
+//         pgd = pgd_offset(mm, vaddr);
+//         if (pgd_none(*pgd) || pgd_bad(*pgd))
+//             continue;
+
+//         p4d = p4d_offset(pgd, vaddr);
+//         if (p4d_none(*p4d) || p4d_bad(*p4d))
+//             continue;
+
+//         pud = pud_offset(p4d, vaddr);
+//         if (pud_none(*pud) || pud_bad(*pud))
+//             continue;
+
+//         pmd = pmd_offset(pud, vaddr);
+//         if (pmd_none(*pmd) || pmd_bad(*pmd))
+//             continue;
+
+//         pte = pte_offset_map(pmd, vaddr);
+//         if (!pte || pte_none(*pte)) {
+//             pte_unmap(pte);
+//             continue;
+//         }
+
+//         unsigned long pfn = pte_pfn(*pte);
+//         pgprot_t prot = pte_pgprot(*pte);
+
+//         len = snprintf(log, 256, "Vaddr: %lx, PFN: %lx, Prot: %lx\n", vaddr, pfn, pgprot_val(prot));
+//         kernel_write(file, log, len, &pos);
+
+//         pr_info("Vaddr: %lx, PFN: %lx, Prot: %lx\n", vaddr, pfn, pgprot_val(prot));
+
+//         pte_unmap(pte);
+//     }
+
+//     kfree(log);
+//     filp_close(file, NULL);
+//     mmput(mm);
+// 	return 0;
+// }
+
+
+
+unsigned long pseudo_mm_getpte(pid_t pid) {
     struct task_struct *task;
     struct mm_struct *mm;
+	struct maple_tree *mt;
+	struct vm_area_struct *vma;
+	
     pgd_t *pgd;
     p4d_t *p4d;
     pud_t *pud;
     pmd_t *pmd;
     pte_t *pte;
-    unsigned long vaddr,i,len;
+    // unsigned long vaddr, i, len;
+    unsigned long len;
     struct file *file;
     loff_t pos = 0;
     char *log;
-	unsigned long nr_pages=size >> PAGE_SHIFT;
 
     task = pid_task(find_vpid(pid), PIDTYPE_PID);
     if (!task) {
-		pr_warn("cannot find pte_task with pid %d\n", pid);
-		return -ENOENT;
-	}
+        pr_warn("cannot find task with pid %d\n", pid);
+        return -ENOENT;
+    }
 
     mm = get_task_mm(task);
     if (!mm) {
-		pr_warn("Failed to get pte_mm_struct for PID %d\n", pid);
-		return -ENOENT;
+        pr_warn("Failed to get mm_struct for PID %d\n", pid);
+        return -ENOENT;
     }
+
+	mt=&mm->mm_mt;
+	MA_STATE(mas, mt, 0, 0);
 
     file = filp_open("/tmp/pte_log.txt", O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (IS_ERR(file)) {
@@ -682,47 +773,67 @@ unsigned long pseudo_mm_getpte(pid_t pid, unsigned long start, unsigned long siz
         return -ENOENT;
     }
 
-    for (i = 0; i < nr_pages; i++) {
-        vaddr = start + (i << PAGE_SHIFT);
+	rcu_read_lock();
+	mas_for_each(&mas, vma, ULONG_MAX) {
+        unsigned long vma_start = vma->vm_start;
+        unsigned long vma_end = vma->vm_end;
+        unsigned long vma_size = vma_end - vma_start;
 
-        pgd = pgd_offset(mm, vaddr);
-        if (pgd_none(*pgd) || pgd_bad(*pgd))
+        if (vma_size <= 0)
             continue;
 
-        p4d = p4d_offset(pgd, vaddr);
-        if (p4d_none(*p4d) || p4d_bad(*p4d))
-            continue;
-
-        pud = pud_offset(p4d, vaddr);
-        if (pud_none(*pud) || pud_bad(*pud))
-            continue;
-
-        pmd = pmd_offset(pud, vaddr);
-        if (pmd_none(*pmd) || pmd_bad(*pmd))
-            continue;
-
-        pte = pte_offset_map(pmd, vaddr);
-        if (!pte || pte_none(*pte)) {
-            pte_unmap(pte);
-            continue;
-        }
-
-        unsigned long pfn = pte_pfn(*pte);
-        pgprot_t prot = pte_pgprot(*pte);
-
-        len = snprintf(log, 256, "Vaddr: %lx, PFN: %lx, Prot: %lx\n", vaddr, pfn, pgprot_val(prot));
+        len = snprintf(log, 256, "VMA: 0x%lx - 0x%lx\n", vma_start, vma_end);
         kernel_write(file, log, len, &pos);
+        pr_info("VMA: 0x%lx - 0x%lx\n", vma_start, vma_end);
 
-        pr_info("Vaddr: %lx, PFN: %lx, Prot: %lx\n", vaddr, pfn, pgprot_val(prot));
+        unsigned long vma_nr_pages = vma_size >> PAGE_SHIFT;
+        unsigned long j;
+        for (j = 0; j < vma_nr_pages; j++) {
+            unsigned long current_vaddr = vma_start + (j << PAGE_SHIFT);
 
-        pte_unmap(pte);
-    }
+            pgd = pgd_offset(mm, current_vaddr);
+            if (pgd_none(*pgd) || pgd_bad(*pgd))
+                continue;
+
+            p4d = p4d_offset(pgd, current_vaddr);
+            if (p4d_none(*p4d) || p4d_bad(*p4d))
+                continue;
+
+            pud = pud_offset(p4d, current_vaddr);
+            if (pud_none(*pud) || pud_bad(*pud))
+                continue;
+
+            pmd = pmd_offset(pud, current_vaddr);
+            if (pmd_none(*pmd) || pmd_bad(*pmd))
+                continue;
+
+            pte = pte_offset_map(pmd, current_vaddr);
+            if (!pte || pte_none(*pte)) {
+                pte_unmap(pte);
+                continue;
+            }
+
+            unsigned long pfn = pte_pfn(*pte);
+            pgprot_t prot = pte_pgprot(*pte);
+
+            len = snprintf(log, 256, "Vaddr: 0x%lx, PFN: 0x%lx, Prot: 0x%lx\n",
+                          current_vaddr, pfn, pgprot_val(prot));
+            kernel_write(file, log, len, &pos);
+            pr_info("Vaddr: 0x%lx, PFN: 0x%lx, Prot: 0x%lx\n",
+                   current_vaddr, pfn, pgprot_val(prot));
+
+            pte_unmap(pte);
+        }
+	}
+	rcu_read_unlock();
+
 
     kfree(log);
     filp_close(file, NULL);
     mmput(mm);
-	return 0;
+    return 0;
 }
+
 
 bool vma_is_pseudo_anon_shared(struct vm_area_struct *vma)
 {
