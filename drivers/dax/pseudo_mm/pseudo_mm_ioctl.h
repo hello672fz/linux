@@ -54,6 +54,11 @@ struct pseudo_mm_getpte_param {
 };
 
 
+struct pseudo_mm_mempool_param {
+	pid_t pid;
+	int fd;
+};
+
 struct pseudo_mm_bring_back_param {
 	int id;
 	/* start virtual address */
@@ -94,6 +99,8 @@ struct pseudo_mm_pf_stat_param {
 #define PSEUDO_MM_IOC_PHY_ADDR \
 	_IOWR(PSEUDO_MM_IOC_MAGIC, 0x08, struct pseudo_mm_phy_addr_param *)
 #define PSEUDO_MM_IOC_GETPTE \
-	_IOR(PSEUDO_MM_IOC_MAGIC, 0x09, int *)
+	_IOR(PSEUDO_MM_IOC_MAGIC, 0x09, pseudo_mm_getpte_param *)
+#define PSEUDO_MM_IOC_MEMPOOL \
+	_IOR(PSEUDO_MM_IOC_MAGIC, 0x10, pseudo_mm_mempool_param *)
 
 #endif

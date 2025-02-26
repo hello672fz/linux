@@ -38,6 +38,14 @@ struct pseudo_mm_backend {
 	struct file *filp;
 };
 
+// Pseudo_mm_pagepool for a specific physical page
+struct pseudo_mm_pagepool {
+    int funcid;               // Unique ID for the funtion mm_pagepool
+    // struct hlist_node hlist;        // Hash list node for pseudo_mm_pagepool
+    struct hlist_node hash_headpages; // Hash table for pagelist based on source pages
+	// struct hlist_head hash_headpages[1024]; item:hash_headpages[i],hashlist_head
+};
+
 // read single page from remote
 // @page: the local page, which will be filled with remote memory content
 // @rpgoff: the remote page offset
@@ -73,6 +81,7 @@ int pseudo_mm_rdma_prefer_node(void);
  */
 int create_pseudo_mm(void);
 struct pseudo_mm *find_pseudo_mm(int id);
+struct pseudo_mm_pagepool *find_pseudo_mm_hash(int id);
 
 /*
  * put_pseudo_mm_with_id() - delete the pseudo_mm corresponding to id
