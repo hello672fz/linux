@@ -5,6 +5,7 @@
 #include <linux/mm_types.h>
 #include <linux/xarray.h>
 #include <linux/rmap.h>
+#include <linux/hashtable.h>
 
 // #define PSEUDO_MM_DEBUG
 
@@ -39,6 +40,16 @@ struct pseudo_mm_backend {
 	struct page *page;
 	u32 nr_pages;
 };
+
+
+// Pseudo_mm_pagepool for a specific physical page
+struct pseudo_mm_pagepool {
+    int funcid;               // Unique ID for the funtion mm_pagepool
+    // struct hlist_node hlist;        // Hash list node for pseudo_mm_pagepool
+    struct hlist_node hash_headpages; // Hash table for pagelist based on source pages
+	// struct hlist_head hash_headpages[1024]; item:hash_headpages[i],hashlist_head
+};
+
 
 // read single page from remote
 // @page: the local page, which will be filled with remote memory content
@@ -76,7 +87,7 @@ int pseudo_mm_rdma_prefer_node(void);
  */
 int create_pseudo_mm(void);
 struct pseudo_mm *find_pseudo_mm(int id);
-
+struct pseudo_mm_pagepool *find_pseudo_mm_hash(int id);
 /*
  * put_pseudo_mm_with_id() - delete the pseudo_mm corresponding to id
  * @id: the id of the pseudo_mm that needed to be deleted, -1 to delete
@@ -136,6 +147,7 @@ unsigned long pseudo_mm_bring_back(int id, unsigned long start,
  */
 unsigned long pseudo_mm_attach(pid_t pid, int id);
 unsigned long pseudo_mm_getpte(pid_t pid);
+unsigned long pseudo_template_getpte(struct mm_struct *mm, int id);
 
 
 /* debug purpose */
