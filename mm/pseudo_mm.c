@@ -220,25 +220,61 @@ inline bool pseudo_mm_rdma_pf_handler_enable(void)
  *
  * Return its id (> 0) when SUCCESS, return errno otherwise
  */
-int create_pseudo_mm(void)
+
+ int create_pseudo_mm(void)
+ {
+	 struct mm_struct *mm;
+	 struct pseudo_mm *pseudo_mm;
+	 struct xa_limit limit;
+	 int ret, id;
+ 
+	 mm = mm_alloc_wo_task();
+	 if (!mm)
+		 return -ENOMEM;
+ 
+	 pseudo_mm = pseudo_mm_alloc();
+	 if (!pseudo_mm) {
+		 ret = -ENOMEM;
+		 goto drop_mm;
+	 }
+	 pseudo_mm->mm = mm;
+	 INIT_LIST_HEAD(&pseudo_mm->pages_list);
+ 
+	 // insert newly created pseudo into xarray
+	 limit = XA_LIMIT(1, PSEUDO_MM_ID_MAX);
+	 ret = xa_alloc(&pseudo_mm_array, &id, pseudo_mm, limit, GFP_KERNEL);
+	 if (ret < 0)
+		 goto drop_pseudo_mm;
+ 
+	 pseudo_mm->id = id;
+	 return id;
+ 
+ drop_pseudo_mm:
+	 kmem_cache_free(pseudo_mm_cachep, pseudo_mm);
+ drop_mm:
+	 mmdrop(mm);
+	 return ret;
+ }
+
+int create_pseudo_mm_hash(void)
 {
-	struct mm_struct *mm;
-	struct pseudo_mm *pseudo_mm;
+	// struct mm_struct *mm;
+	// struct pseudo_mm *pseudo_mm;
 	struct xa_limit limit;
 	struct pseudo_mm_pagepool *pseudo_mm_hash;
 	int ret, id, rethash;
 
-	mm = mm_alloc_wo_task();
-	if (!mm)
-		return -ENOMEM;
+	// mm = mm_alloc_wo_task();
+	// if (!mm)
+	// 	return -ENOMEM;
 
-	pseudo_mm = pseudo_mm_alloc();
-	if (!pseudo_mm) {
-		ret = -ENOMEM;
-		goto drop_mm;
-	}
-	pseudo_mm->mm = mm;
-	INIT_LIST_HEAD(&pseudo_mm->pages_list);
+	// pseudo_mm = pseudo_mm_alloc();
+	// if (!pseudo_mm) {
+	// 	ret = -ENOMEM;
+	// 	goto drop_mm;
+	// }
+	// pseudo_mm->mm = mm;
+	// INIT_LIST_HEAD(&pseudo_mm->pages_list);
 
 
 	pseudo_mm_hash = pseudo_mm_hash_alloc();
@@ -251,24 +287,24 @@ int create_pseudo_mm(void)
 
 	// insert newly created pseudo into xarray
 	limit = XA_LIMIT(1, PSEUDO_MM_ID_MAX);
-	rethash = xa_alloc(&pseudo_mm_hash_array, &id, pseudo_mm, limit, GFP_KERNEL);
-	ret = xa_alloc(&pseudo_mm_array, &id, pseudo_mm, limit, GFP_KERNEL);
-	if (ret < 0)
-		goto drop_pseudo_mm;
+	rethash = xa_alloc(&pseudo_mm_hash_array, &id, pseudo_mm_hash, limit, GFP_KERNEL);
+	// ret = xa_alloc(&pseudo_mm_array, &id, pseudo_mm, limit, GFP_KERNEL);
+	// if (ret < 0)
+	// 	goto drop_pseudo_mm;
 	if (rethash < 0)
 		goto drop_pseudo_mm_hash;
 
-	pseudo_mm->id = id;
+	pseudo_mm_hash->funcid = id;
 
 	return id;
 
 
 drop_pseudo_mm_hash:
 	kmem_cache_free(pseudo_mm_hash_cachep, pseudo_mm_hash);
-drop_pseudo_mm:
-	kmem_cache_free(pseudo_mm_cachep, pseudo_mm);
-drop_mm:
-	mmdrop(mm);
+// drop_pseudo_mm:
+// 	kmem_cache_free(pseudo_mm_cachep, pseudo_mm);
+// drop_mm:
+// 	mmdrop(mm);
 	return ret;
 }
 
@@ -340,10 +376,10 @@ static void put_pseudo_mm_hash(struct pseudo_mm_pagepool *pseudo_mm_hash)
 	kmem_cache_free(pseudo_mm_hash_cachep, pseudo_mm_hash);
 }
 
+
 void put_pseudo_mm_with_id(int id)
 {
 	struct pseudo_mm *pseudo_mm;
-	struct pseudo_mm_pagepool *pseudo_mm_hash;
 	pr_info("process %d put pseudo_mm id %d\n", current->pid, id);
 	// id == -1 is a specical case to delete all pseudo_mm
 	if (id == -1) {
@@ -352,6 +388,26 @@ void put_pseudo_mm_with_id(int id)
 			if (pseudo_mm)
 				put_pseudo_mm(pseudo_mm);
 		}
+		return;
+	}
+
+	pseudo_mm = find_pseudo_mm(id);
+	if (pseudo_mm)
+		put_pseudo_mm(pseudo_mm);
+}
+
+void put_pseudo_mm_hash_with_id(int id)
+{
+	// struct pseudo_mm *pseudo_mm;
+	struct pseudo_mm_pagepool *pseudo_mm_hash;
+	pr_info("process %d put pseudo_mm id %d\n", current->pid, id);
+	// id == -1 is a specical case to delete all pseudo_mm
+	if (id == -1) {
+		unsigned long idx;
+		// xa_for_each(&pseudo_mm_array, idx, pseudo_mm) {
+		// 	if (pseudo_mm)
+		// 		put_pseudo_mm(pseudo_mm);
+		// }
 		xa_for_each(&pseudo_mm_hash_array, idx, pseudo_mm_hash) {
 			if (pseudo_mm_hash)
 				put_pseudo_mm_hash(pseudo_mm_hash);
@@ -359,11 +415,11 @@ void put_pseudo_mm_with_id(int id)
 		return;
 	}
 
-	pseudo_mm = find_pseudo_mm(id);
+	// pseudo_mm = find_pseudo_mm(id);
 	pseudo_mm_hash = find_pseudo_mm_hash(id);
 
-	if (pseudo_mm)
-		put_pseudo_mm(pseudo_mm);
+	// if (pseudo_mm)
+	// 	put_pseudo_mm(pseudo_mm);
 	if (pseudo_mm_hash)
 		put_pseudo_mm(pseudo_mm_hash);
 }

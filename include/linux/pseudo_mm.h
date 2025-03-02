@@ -86,6 +86,7 @@ int pseudo_mm_rdma_prefer_node(void);
  * return the id of that pseudo_mm, which can be used to find_pseudo_mm()
  */
 int create_pseudo_mm(void);
+int create_pseudo_mm_hash(void);
 struct pseudo_mm *find_pseudo_mm(int id);
 struct pseudo_mm_pagepool *find_pseudo_mm_hash(int id);
 /*
@@ -94,6 +95,8 @@ struct pseudo_mm_pagepool *find_pseudo_mm_hash(int id);
  * all pseudo_mm
  */
 void put_pseudo_mm_with_id(int id);
+void put_pseudo_mm_hash_with_id(int id);
+
 /*
  * Add a memory mapping to this pseudo_mm.
  * This will not fill content of the physical page.
