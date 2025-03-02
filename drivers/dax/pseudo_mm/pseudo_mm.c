@@ -92,15 +92,18 @@ static inline long _pseudo_mm_setup_pt(void *__user args)
 	err = pseudo_mm_setup_pt(param.id, param.start, param.size, param.pgoff,
 				 DAX_MEM);
 	return err;
-}
+} 
 
-static inline long _pseudo_mm_getpte(void *__user args)
+// void *__user args
+static inline long _pseudo_mm_getpte(pid_t pid)
 {
 	struct pseudo_mm_getpte_param param;
+	param.pid=pid;
 	unsigned long err;
-	err = copy_from_user(&param, args, sizeof(param));
-	if (err)
-		return err;
+	// err = copy_from_user(&param, args, sizeof(param));
+	// if (err)
+	// 	return err;
+	
 //  err = pseudo_mm_setup_pt(param.id, param.start, param.size, param.pgoff,
 // 			 param.type);
 	err = pseudo_mm_getpte(param.pid);
@@ -210,6 +213,7 @@ static long pseudo_mm_unlocked_ioctl(struct file *filp, unsigned int cmd,
 	case PSEUDO_MM_IOC_GETPTE:
 		err = copy_from_user(&pid, (const void *)args,
 				     sizeof(pid));
+		pr_info("Attention:%d",pid);
 		if (err)
 			return err;
 		err=_pseudo_mm_getpte(pid);

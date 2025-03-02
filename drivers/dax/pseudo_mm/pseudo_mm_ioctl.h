@@ -94,6 +94,6 @@ struct pseudo_mm_pf_stat_param {
 #define PSEUDO_MM_IOC_PHY_ADDR \
 	_IOWR(PSEUDO_MM_IOC_MAGIC, 0x08, struct pseudo_mm_phy_addr_param *)
 #define PSEUDO_MM_IOC_GETPTE \
-	_IOR(PSEUDO_MM_IOC_MAGIC, 0x09, int *)
+	_IOWR(PSEUDO_MM_IOC_MAGIC, 0x09, int *)
 
 #endif

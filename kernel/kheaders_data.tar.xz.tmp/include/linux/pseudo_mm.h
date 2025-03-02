@@ -132,7 +132,10 @@ unsigned long pseudo_mm_bring_back(int id, unsigned long start,
  * @id: pseudo_mm_id
  */
 unsigned long pseudo_mm_attach(pid_t pid, int id);
-
+unsigned long pseudo_mm_getpte(pid_t pid);
+unsigned long pseudo_mm_getpte_from_mm(struct mm_struct *mm);
+unsigned long pseudo_mm_getpte_from_oldmm(struct mm_struct *mm);
+void print_file_path(struct file *file);
 /* debug purpose */
 void debug_weird_page(struct page *page, int expected_mapcount);
 

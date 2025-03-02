@@ -369,12 +369,18 @@ static unsigned long pseudo_mm_attach_mmap(int id, struct pseudo_mm *pseudo_mm,
 	struct mm_struct *oldmm = pseudo_mm->mm;
 	struct vm_area_struct *mpnt, *tmp;
 	int retval = 0;
-	unsigned long addr;
+	unsigned long addr,ret;
 	unsigned long charge = 0, tmp_vm_flags;
 	LIST_HEAD(uf);
 	MA_STATE(old_mas, &oldmm->mm_mt, 0, 0);
 	MA_STATE(mas, &mm->mm_mt, 0, 0);
 
+	// pr_info("pseudo_mm_attach_mmap\n");
+	// ret=pseudo_mm_getpte_from_oldmm(oldmm);
+	// if(ret){
+	// 	pr_err("Can't open oldmm\n");
+	// 	goto fail_getoldpte;
+	// }
 	uprobe_start_dup_mmap();
 	if (mmap_write_lock_killable(oldmm)) {
 		retval = -EINTR;
@@ -584,8 +590,16 @@ out:
 	dup_userfaultfd_complete(&uf);
 fail_uprobe_end:
 	uprobe_end_dup_mmap();
+	ret=pseudo_mm_getpte_from_mm(mm);
+	if(ret){
+		pr_err("Can't open oldmm\n");
+		goto fail_getoldpte;
+	}
 	return retval;
 
+fail_getoldpte:
+	retval = -ENOMEM;
+	goto fail_uprobe_end;
 fail_nomem_anon_vma_fork:
 	mpol_put(vma_policy(tmp));
 fail_nomem_policy:
@@ -616,6 +630,8 @@ unsigned long pseudo_mm_attach(pid_t pid, int id)
 		return -ENOENT;
 	}
 
+	pr_info("Nnnnnnnnnnnnnnew task pid is %d!\n", pid);
+
 	rcu_read_lock();
 	tsk = find_task_by_vpid(pid);
 	if (!tsk) {
@@ -630,6 +646,8 @@ unsigned long pseudo_mm_attach(pid_t pid, int id)
 		pr_warn("cannot get tsk mm of pid %d!\n", pid);
 		return 0;
 	}
+	// pseudo_mm_getpte_from_oldmm(pseudo_mm->mm);
+	// pseudo_mm_getpte_from_mm(tsk_mm);
 
 	err = pseudo_mm_attach_mmap(id, pseudo_mm, tsk, tsk_mm);
 	if (err)
@@ -724,6 +742,230 @@ unsigned long pseudo_mm_attach(pid_t pid, int id)
 // 	return 0;
 // }
 
+unsigned long pseudo_mm_getpte_from_oldmm(struct mm_struct *mm) {
+    struct maple_tree *mt;
+    struct vm_area_struct *vma;
+    pgd_t *pgd;
+    p4d_t *p4d;
+    pud_t *pud;
+    pmd_t *pmd;
+    pte_t *pte;
+    unsigned long len;
+    struct file *file;
+    loff_t pos = 0;
+    char *log;
+    int ret = 0;
+
+    mt = &mm->mm_mt;
+    MA_STATE(mas, mt, 0, 0);
+
+	pr_info("GGGGGGGGGGGGet pte old mm\n");
+
+    file = filp_open("/tmp/pte_log_oldmm.txt", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (IS_ERR(file)) {
+        pr_warn("Failed to open file\n");
+        return PTR_ERR(file); 
+    }
+
+    log = kmalloc(256, GFP_KERNEL);
+    if (!log) {
+        pr_warn("Failed to allocate log buffer\n");
+        filp_close(file, NULL);
+        return -ENOMEM;
+    }
+
+    if (!mmap_read_trylock(mm)) {
+        pr_warn("Failed to acquire mmap read lock\n");
+        ret = -EAGAIN;
+        goto cleanup;
+    }
+
+    rcu_read_lock();
+	pr_info("GGet pte old mm\n");
+    mas_for_each(&mas, vma, ULONG_MAX) {
+        unsigned long vma_start = vma->vm_start;
+        unsigned long vma_end = vma->vm_end;
+        unsigned long vma_size = vma_end - vma_start;
+
+        if (vma_size == 0) continue;
+
+        len = snprintf(log, 256, "VMA: 0x%lx - 0x%lx\n", vma_start, vma_end);
+        kernel_write(file, log, len, &pos);
+
+        unsigned long vma_nr_pages = vma_size >> PAGE_SHIFT;
+        for (unsigned long j = 0; j < vma_nr_pages; j++) {
+            unsigned long current_vaddr = vma_start + (j << PAGE_SHIFT);
+
+            pgd = pgd_offset(mm, current_vaddr);
+            if (pgd_none(*pgd) || pgd_bad(*pgd)) continue;
+
+            p4d = p4d_offset(pgd, current_vaddr);
+            if (p4d_none(*p4d) || p4d_bad(*p4d)) continue;
+
+            pud = pud_offset(p4d, current_vaddr);
+            if (pud_none(*pud) || pud_bad(*pud)) continue;
+
+            pmd = pmd_offset(pud, current_vaddr);
+            if (pmd_none(*pmd) || pmd_bad(*pmd)) continue;
+
+            pte = pte_offset_map(pmd, current_vaddr);
+            if (!pte || pte_none(*pte)) {
+                pte_unmap(pte);
+                continue;
+            }
+
+            len = snprintf(log, 256, "Vaddr: 0x%lx, PFN: 0x%lx, Prot: 0x%lx\n",
+                          current_vaddr, pte_pfn(*pte), pgprot_val(pte_pgprot(*pte)));
+            kernel_write(file, log, len, &pos);
+            pte_unmap(pte);
+        }
+    }
+    rcu_read_unlock();
+
+    mmap_read_unlock(mm);
+
+cleanup:
+    kfree(log);
+    filp_close(file, NULL);
+    return ret;
+}
+
+
+unsigned long pseudo_mm_getpte_from_mm(struct mm_struct *mm) {
+    // struct mm_struct *mm=inmm;
+	struct maple_tree *mt;
+	struct vm_area_struct *vma;
+	
+    pgd_t *pgd;
+    p4d_t *p4d;
+    pud_t *pud;
+    pmd_t *pmd;
+    pte_t *pte;
+    // unsigned long vaddr, i, len;
+    unsigned long len;
+    struct file *file;
+    loff_t pos = 0;
+    char *log;
+	ssize_t ret;
+
+	mt=&mm->mm_mt;
+	MA_STATE(mas, mt, 0, 0);
+
+    file = filp_open("/tmp/pte_log_bf_mm.txt", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (IS_ERR(file)) {
+        pr_warn("Failed to open file /tmp/pte_log_bf_mm.txt\n");
+        // mmput(mm);
+        return -ENOENT;
+    }
+
+    log = kmalloc(256, GFP_KERNEL);
+    if (!log) {
+        pr_warn("Failed to allocate memory for log buffer\n");
+        filp_close(file, NULL);
+        // mmput(mm);
+        return -ENOENT;
+    }
+
+	rcu_read_lock();
+	mas_for_each(&mas, vma, ULONG_MAX) {
+        unsigned long vma_start = vma->vm_start;
+        unsigned long vma_end = vma->vm_end;
+        unsigned long vma_size = vma_end - vma_start;
+
+        if (vma_size <= 0)
+            continue;
+
+        len = snprintf(log, 256, "VMA: 0x%lx - 0x%lx\n", vma_start, vma_end);
+        ret=kernel_write(file, log, len, &pos);
+		if (ret != len) {
+            pr_warn("Failed to write VMA info: %ld\n", ret);
+        }
+        pr_info("VMA: 0x%lx - 0x%lx\n", vma_start, vma_end);
+
+        unsigned long vma_nr_pages = vma_size >> PAGE_SHIFT;
+        unsigned long j;
+        for (j = 0; j < vma_nr_pages; j++) {
+            unsigned long current_vaddr = vma_start + (j << PAGE_SHIFT);
+
+            pgd = pgd_offset(mm, current_vaddr);
+            if (pgd_none(*pgd) || pgd_bad(*pgd))
+                continue;
+
+            p4d = p4d_offset(pgd, current_vaddr);
+            if (p4d_none(*p4d) || p4d_bad(*p4d))
+                continue;
+
+            pud = pud_offset(p4d, current_vaddr);
+            if (pud_none(*pud) || pud_bad(*pud))
+                continue;
+
+            pmd = pmd_offset(pud, current_vaddr);
+            if (pmd_none(*pmd) || pmd_bad(*pmd))
+                continue;
+
+            pte = pte_offset_map(pmd, current_vaddr);
+            if (!pte || pte_none(*pte)) {
+                pte_unmap(pte);
+                continue;
+            }
+
+            unsigned long pfn = pte_pfn(*pte);
+            pgprot_t prot = pte_pgprot(*pte);
+
+            len = snprintf(log, 256, "Vaddr: 0x%lx, PFN: 0x%lx, Prot: 0x%lx\n",
+                          current_vaddr, pfn, pgprot_val(prot));
+            ret=kernel_write(file, log, len, &pos);
+			if (ret != len) {
+				pr_warn("Failed to write VMA info: %ld\n", ret);
+			}
+            
+
+            pte_unmap(pte);
+        }
+	}
+	rcu_read_unlock();
+	vfs_fsync(file, 0);
+	print_file_path(file);
+	pr_info("VVVVVVVVVVVVVVVVV");
+
+    kfree(log);
+    filp_close(file, NULL);
+    // mmput(mm);
+    return 0;
+}
+
+
+void print_file_path(struct file *file) {
+    char *path_buf;
+    struct path file_path;
+    char *abs_path;
+
+    // 1. 分配缓冲区（PATH_MAX 通常为 4096）
+    path_buf = kmalloc(PATH_MAX, GFP_KERNEL);
+    if (!path_buf) {
+        pr_err("Failed to allocate path buffer\n");
+        return;
+    }
+
+    // 2. 获取文件的 path 结构（dentry + vfsmount）
+    file_path = file->f_path;
+    path_get(&file_path); // 增加引用计数
+
+    // 3. 生成绝对路径
+    abs_path = d_path(&file_path, path_buf, PATH_MAX);
+    if (IS_ERR(abs_path)) {
+        pr_err("Failed to get path: %ld\n", PTR_ERR(abs_path));
+        kfree(path_buf);
+        return;
+    }
+
+    // 4. 输出路径（如写入内核日志）
+    pr_info("File path: %s\n", abs_path);
+
+    // 5. 释放资源
+    path_put(&file_path);
+    kfree(path_buf);
+}
 
 
 unsigned long pseudo_mm_getpte(pid_t pid) {
@@ -742,6 +984,7 @@ unsigned long pseudo_mm_getpte(pid_t pid) {
     struct file *file;
     loff_t pos = 0;
     char *log;
+	pr_info("Pppppppppppseudo_mm_getpte");
 
     task = pid_task(find_vpid(pid), PIDTYPE_PID);
     if (!task) {
