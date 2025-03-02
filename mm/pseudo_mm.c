@@ -1078,6 +1078,7 @@ unsigned long pseudo_mm_getpte(pid_t pid) {
     struct file *file;
     loff_t pos = 0;
     char *log;
+	char filename[256];
 
     task = pid_task(find_vpid(pid), PIDTYPE_PID);
     if (!task) {
