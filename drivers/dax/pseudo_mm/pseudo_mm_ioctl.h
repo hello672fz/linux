@@ -54,6 +54,11 @@ struct pseudo_mm_getpte_param {
 };
 
 
+struct pseudo_mm_mempool_param {
+	pid_t pid;
+	int fd;
+};
+
 struct pseudo_mm_bring_back_param {
 	int id;
 	/* start virtual address */

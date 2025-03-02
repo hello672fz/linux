@@ -26,13 +26,16 @@
 
 /* XArray used for id allocation */
 DEFINE_XARRAY_ALLOC1(pseudo_mm_array);
+DEFINE_XARRAY_ALLOC1(pseudo_mm_hash_array);
 /* kmemcache for pseudo_mm struct */
 static struct kmem_cache *pseudo_mm_cachep;
+static struct kmem_cache *pseudo_mm_hash_cachep;
 static struct pseudo_mm_backend backend = {.filp = NULL, .page = NULL, .nr_pages = 0};
 static pseudo_mm_rdma_pf_ops_t *pseudo_mm_rdma_pf_ops = NULL;
 static int __pseudo_mm_rdma_prefer_node = NUMA_NO_NODE;
 
 #define pseudo_mm_alloc() (kmem_cache_alloc(pseudo_mm_cachep, GFP_KERNEL))
+#define pseudo_mm_hash_alloc() (kmem_cache_alloc(pseudo_mm_hash_cachep, GFP_KERNEL))
 
 #define PSEUDO_MM_ID_MAX INT_MAX
 
@@ -79,7 +82,18 @@ int __init pseudo_mm_cache_init(void)
 		return -ENOMEM;
 	return 0;
 }
+
+int __init pseudo_mm_hash_cache_init(void)
+{
+	pseudo_mm_hash_cachep = KMEM_CACHE(pseudo_mm_pagepool, SLAB_PANIC | SLAB_ACCOUNT);
+	if (!pseudo_mm_hash_cachep)
+		return -ENOMEM;
+	return 0;
+}
+
 postcore_initcall(pseudo_mm_cache_init);
+postcore_initcall(pseudo_mm_hash_cache_init);
+
 
 unsigned long register_pseudo_mm_rdma_pf_handler(pseudo_mm_rdma_pf_ops_t *op,
 						 int node)
@@ -211,7 +225,8 @@ int create_pseudo_mm(void)
 	struct mm_struct *mm;
 	struct pseudo_mm *pseudo_mm;
 	struct xa_limit limit;
-	int ret, id;
+	struct pseudo_mm_pagepool *pseudo_mm_hash;
+	int ret, id, rethash;
 
 	mm = mm_alloc_wo_task();
 	if (!mm)
@@ -225,15 +240,31 @@ int create_pseudo_mm(void)
 	pseudo_mm->mm = mm;
 	INIT_LIST_HEAD(&pseudo_mm->pages_list);
 
+
+	pseudo_mm_hash = pseudo_mm_hash_alloc();
+	if (!pseudo_mm_hash) {
+		ret = -ENOMEM;
+		goto drop_pseudo_mm_hash;
+	}
+	INIT_HLIST_NODE(&pseudo_mm_hash->hash_headpages);
+
+
 	// insert newly created pseudo into xarray
 	limit = XA_LIMIT(1, PSEUDO_MM_ID_MAX);
+	rethash = xa_alloc(&pseudo_mm_hash_array, &id, pseudo_mm, limit, GFP_KERNEL);
 	ret = xa_alloc(&pseudo_mm_array, &id, pseudo_mm, limit, GFP_KERNEL);
 	if (ret < 0)
 		goto drop_pseudo_mm;
+	if (rethash < 0)
+		goto drop_pseudo_mm_hash;
 
 	pseudo_mm->id = id;
+
 	return id;
 
+
+drop_pseudo_mm_hash:
+	kmem_cache_free(pseudo_mm_hash_cachep, pseudo_mm_hash);
 drop_pseudo_mm:
 	kmem_cache_free(pseudo_mm_cachep, pseudo_mm);
 drop_mm:
@@ -259,6 +290,24 @@ struct pseudo_mm *find_pseudo_mm(int id)
 	return pseudo_mm;
 }
 
+struct pseudo_mm_pagepool *find_pseudo_mm_hash(int id)
+{
+	struct pseudo_mm_pagepool *pseudo_mm_hash = NULL;
+	unsigned long orig_id;
+
+	// invalid id
+	if (unlikely(id <= 0)) {
+		pr_warn("process %d find pseudo_mm with invalid id = %d\n",
+			current->pid, id);
+		return NULL;
+	}
+
+	orig_id = id;
+	pseudo_mm_hash = xa_find(&pseudo_mm_hash_array, &orig_id, orig_id, XA_PRESENT);
+	WARN_ON(pseudo_mm_hash && pseudo_mm_hash->funcid != id);
+	return pseudo_mm_hash;
+}
+
 static void put_pseudo_mm(struct pseudo_mm *pseudo_mm)
 {
 	struct pseudo_mm_pin_pages *pin_page, *tmp;
@@ -275,9 +324,26 @@ static void put_pseudo_mm(struct pseudo_mm *pseudo_mm)
 	kmem_cache_free(pseudo_mm_cachep, pseudo_mm);
 }
 
+static void put_pseudo_mm_hash(struct pseudo_mm_pagepool *pseudo_mm_hash)
+{
+	struct pseudo_mm_pin_list *pin_list, *tmp;	
+	hlist_for_each_entry_safe(pin_page, tmp, &pseudo_mm_hash->hash_headpages, hlist) {
+		list_del(&pin_page->list);
+		unpin_user_pages(pin_page->pages, pin_page->nr_pin_pages);
+		kvfree(pin_page->pages);
+		kfree(pin_page);
+	}
+	if (pseudo_mm_hash->hash_headpages)
+		mmput(pseudo_mm->mm);
+	if (pseudo_mm_hash->funcid > 0)
+		xa_erase(&pseudo_mm_hash_array, pseudo_mm_hash->funcid);
+	kmem_cache_free(pseudo_mm_hash_cachep, pseudo_mm_hash);
+}
+
 void put_pseudo_mm_with_id(int id)
 {
 	struct pseudo_mm *pseudo_mm;
+	struct pseudo_mm_pagepool *pseudo_mm_hash;
 	pr_info("process %d put pseudo_mm id %d\n", current->pid, id);
 	// id == -1 is a specical case to delete all pseudo_mm
 	if (id == -1) {
@@ -286,12 +352,20 @@ void put_pseudo_mm_with_id(int id)
 			if (pseudo_mm)
 				put_pseudo_mm(pseudo_mm);
 		}
+		xa_for_each(&pseudo_mm_hash_array, idx, pseudo_mm_hash) {
+			if (pseudo_mm_hash)
+				put_pseudo_mm_hash(pseudo_mm_hash);
+		}
 		return;
 	}
 
 	pseudo_mm = find_pseudo_mm(id);
+	pseudo_mm_hash = find_pseudo_mm_hash(id);
+
 	if (pseudo_mm)
 		put_pseudo_mm(pseudo_mm);
+	if (pseudo_mm_hash)
+		put_pseudo_mm(pseudo_mm_hash);
 }
 
 unsigned long pseudo_mm_add_map(int id, unsigned long start, unsigned long size,
@@ -616,7 +690,7 @@ fail_with_retval:
 	vm_unacct_memory(charge);
 	goto loop_out;
 }
-
+// TODO:add argvs [id,id2],for remapped attach
 unsigned long pseudo_mm_attach(pid_t pid, int id)
 {
 	struct task_struct *tsk;
@@ -625,12 +699,12 @@ unsigned long pseudo_mm_attach(pid_t pid, int id)
 	unsigned long err;
 
 	pseudo_mm = find_pseudo_mm(id);
+	struct mm_struct *mm=pseudo_mm->mm;
+	pr_info("PPPPPPPPPPPPPPPPPPPPPPPPPPPPseudo_mm attach with id %d\n", id);
 	if (!pseudo_mm) {
 		pr_warn("cannot find pseudo_mm with id %d\n", id);
 		return -ENOENT;
 	}
-
-	pr_info("Nnnnnnnnnnnnnnew task pid is %d!\n", pid);
 
 	rcu_read_lock();
 	tsk = find_task_by_vpid(pid);
@@ -659,88 +733,108 @@ unsigned long pseudo_mm_attach(pid_t pid, int id)
 	return err ? err : 0;
 }
 
-// unsigned long pseudo_mm_getpte(pid_t pid, unsigned long start, unsigned long size) {
-//     struct task_struct *task;
-//     struct mm_struct *mm;
-//     pgd_t *pgd;
-//     p4d_t *p4d;
-//     pud_t *pud;
-//     pmd_t *pmd;
-//     pte_t *pte;
-//     unsigned long vaddr,i,len;
-//     struct file *file;
-//     loff_t pos = 0;
-//     char *log;
-// 	unsigned long nr_pages=size >> PAGE_SHIFT;
+unsigned long pseudo_template_getpte(struct mm_struct *mm, int id) {
 
-//     task = pid_task(find_vpid(pid), PIDTYPE_PID);
-//     if (!task) {
-// 		pr_warn("cannot find pte_task with pid %d\n", pid);
-// 		return -ENOENT;
-// 	}
+	struct maple_tree *mt;
+	struct vm_area_struct *vma;
+	unsigned long err;
+	
+    pgd_t *pgd;
+    p4d_t *p4d;
+    pud_t *pud;
+    pmd_t *pmd;
+    pte_t *pte;
+    // unsigned long vaddr, i, len;
+    unsigned long len;
+    struct file *file;
+    loff_t pos = 0;
+    char *log;
+	char filename[256];
 
-//     mm = get_task_mm(task);
-//     if (!mm) {
-// 		pr_warn("Failed to get pte_mm_struct for PID %d\n", pid);
-// 		return -ENOENT;
-//     }
+    if (!mm) {
+        pr_warn("cannot find pseudo_mm with id %d\n", id);
+        return -ENOENT;
+    }
 
-//     file = filp_open("/tmp/pte_log.txt", O_WRONLY | O_CREAT | O_TRUNC, 0644);
-//     if (IS_ERR(file)) {
-//         pr_warn("Failed to open file /tmp/pte_log.txt\n");
-//         mmput(mm);
-//         return -ENOENT;
-//     }
+	mt=&mm->mm_mt;
+	MA_STATE(mas, mt, 0, 0);
+	snprintf(filename, sizeof(filename), "/tmp/pte_bf_%d.txt", id);
 
-//     log = kmalloc(256, GFP_KERNEL);
-//     if (!log) {
-//         pr_warn("Failed to allocate memory for log buffer\n");
-//         filp_close(file, NULL);
-//         mmput(mm);
-//         return -ENOENT;
-//     }
+    file = filp_open(filename, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (IS_ERR(file)) {
+        pr_warn("Failed to open file /tmp/pte_log.txt\n");
+        mmput(mm);
+        return -ENOENT;
+    }
 
-//     for (i = 0; i < nr_pages; i++) {
-//         vaddr = start + (i << PAGE_SHIFT);
+    log = kmalloc(256, GFP_KERNEL);
+    if (!log) {
+        pr_warn("Failed to allocate memory for log buffer\n");
+        filp_close(file, NULL);
+        mmput(mm);
+        return -ENOENT;
+    }
 
-//         pgd = pgd_offset(mm, vaddr);
-//         if (pgd_none(*pgd) || pgd_bad(*pgd))
-//             continue;
+	rcu_read_lock();
+	mas_for_each(&mas, vma, ULONG_MAX) {
+        unsigned long vma_start = vma->vm_start;
+        unsigned long vma_end = vma->vm_end;
+        unsigned long vma_size = vma_end - vma_start;
 
-//         p4d = p4d_offset(pgd, vaddr);
-//         if (p4d_none(*p4d) || p4d_bad(*p4d))
-//             continue;
+        if (vma_size <= 0)
+            continue;
 
-//         pud = pud_offset(p4d, vaddr);
-//         if (pud_none(*pud) || pud_bad(*pud))
-//             continue;
+        len = snprintf(log, 256, "VMA: 0x%lx - 0x%lx\n", vma_start, vma_end);
+        kernel_write(file, log, len, &pos);
+        pr_info("VMA: 0x%lx - 0x%lx\n", vma_start, vma_end);
 
-//         pmd = pmd_offset(pud, vaddr);
-//         if (pmd_none(*pmd) || pmd_bad(*pmd))
-//             continue;
+        unsigned long vma_nr_pages = vma_size >> PAGE_SHIFT;
+        unsigned long j;
+        for (j = 0; j < vma_nr_pages; j++) {
+            unsigned long current_vaddr = vma_start + (j << PAGE_SHIFT);
 
-//         pte = pte_offset_map(pmd, vaddr);
-//         if (!pte || pte_none(*pte)) {
-//             pte_unmap(pte);
-//             continue;
-//         }
+            pgd = pgd_offset(mm, current_vaddr);
+            if (pgd_none(*pgd) || pgd_bad(*pgd))
+                continue;
 
-//         unsigned long pfn = pte_pfn(*pte);
-//         pgprot_t prot = pte_pgprot(*pte);
+            p4d = p4d_offset(pgd, current_vaddr);
+            if (p4d_none(*p4d) || p4d_bad(*p4d))
+                continue;
 
-//         len = snprintf(log, 256, "Vaddr: %lx, PFN: %lx, Prot: %lx\n", vaddr, pfn, pgprot_val(prot));
-//         kernel_write(file, log, len, &pos);
+            pud = pud_offset(p4d, current_vaddr);
+            if (pud_none(*pud) || pud_bad(*pud))
+                continue;
 
-//         pr_info("Vaddr: %lx, PFN: %lx, Prot: %lx\n", vaddr, pfn, pgprot_val(prot));
+            pmd = pmd_offset(pud, current_vaddr);
+            if (pmd_none(*pmd) || pmd_bad(*pmd))
+                continue;
 
-//         pte_unmap(pte);
-//     }
+            pte = pte_offset_map(pmd, current_vaddr);
+            if (!pte || pte_none(*pte)) {
+                pte_unmap(pte);
+                continue;
+            }
 
-//     kfree(log);
-//     filp_close(file, NULL);
-//     mmput(mm);
-// 	return 0;
-// }
+            unsigned long pfn = pte_pfn(*pte);
+            pgprot_t prot = pte_pgprot(*pte);
+
+            len = snprintf(log, 256, "Vaddr: 0x%lx, PFN: 0x%lx, Prot: 0x%lx\n",
+                          current_vaddr, pfn, pgprot_val(prot));
+            kernel_write(file, log, len, &pos);
+            pr_info("Vaddr: 0x%lx, PFN: 0x%lx, Prot: 0x%lx\n",
+                   current_vaddr, pfn, pgprot_val(prot));
+
+            pte_unmap(pte);
+        }
+	}
+	rcu_read_unlock();
+
+
+    kfree(log);
+    filp_close(file, NULL);
+    mmput(mm);
+    return 0;
+}
 
 // unsigned long pseudo_mm_getpte_from_oldmm(struct mm_struct *mm) {
 //     struct maple_tree *mt;
@@ -984,7 +1078,6 @@ unsigned long pseudo_mm_getpte(pid_t pid) {
     struct file *file;
     loff_t pos = 0;
     char *log;
-	pr_info("Pppppppppppseudo_mm_getpte");
 
     task = pid_task(find_vpid(pid), PIDTYPE_PID);
     if (!task) {
@@ -1001,7 +1094,9 @@ unsigned long pseudo_mm_getpte(pid_t pid) {
 	mt=&mm->mm_mt;
 	MA_STATE(mas, mt, 0, 0);
 
-    file = filp_open("/tmp/pte_log.txt", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+	snprintf(filename, sizeof(filename), "/tmp/pte_af_%d.txt", pid);
+
+    file = filp_open(filename, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (IS_ERR(file)) {
         pr_warn("Failed to open file /tmp/pte_log.txt\n");
         mmput(mm);
