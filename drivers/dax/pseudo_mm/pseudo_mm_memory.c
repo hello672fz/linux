@@ -45,8 +45,8 @@ struct source_page_list {
 // struct pseudo_mm_pagepool {
 //     int funcid;               // Unique ID for the funtion mm_pagepool
 //     struct hlist_node hlist;        // Hash list node for pseudo_mm_pagepool
-//     DECLARE_HASHTABLE(hash_headpages, 1); // Hash table for pagelist based on source pages
-// 	// struct hlist_head hash_headpages[1024]; item:hash_headpages[i],hashlist_head
+//     DECLARE_HASHTABLE(srcpages_hash_list, 1); // Hash table for pagelist based on source pages
+// 	// struct hlist_head srcpages_hash_list[1024]; item:srcpages_hash_list[i],hashlist_head
 // };
 
 
@@ -146,7 +146,7 @@ static unsigned long add_physical_page(int id, phys_addr_t src_paddr, unsigned i
     }
 
     fpp->funcid = id;
-    hash_init(fpp->hash_headpages);
+    hash_init(fpp->srcpages_hash_list);
 
     // Get the source page from the physical address
     src_page = pfn_to_page(src_paddr >> PAGE_SHIFT);
@@ -157,7 +157,7 @@ static unsigned long add_physical_page(int id, phys_addr_t src_paddr, unsigned i
     }
 
     // Allocate and copy pages
-    if (allocate_and_copy_pages_numa(src_page, num_pages, numa_node, &fpp->hash_headpages)) {
+    if (allocate_and_copy_pages_numa(src_page, num_pages, numa_node, &fpp->srcpages_hash_list)) {
         kfree(fpp);
         return -ENOMEM;
     }
@@ -183,7 +183,7 @@ static void free_copy_page_pools(void)
         struct source_page_list *pl;
         struct hlist_node *tmp_fp;
 
-        hash_for_each_safe(fpp->hash_headpages, page_bkt, tmp_fp, pl, list_head) {
+        hash_for_each_safe(fpp->srcpages_hash_list, page_bkt, tmp_fp, pl, list_head) {
             list_del(&pl->list_head);
             __free_page(pl->page);
             kfree(pl);
@@ -207,7 +207,7 @@ static void remove_physical_page(unsigned long id)
             struct source_page_list *pl;
             struct hlist_node *tmp_fp;
 
-            hash_for_each_safe(fpp->hash_headpages, page_bkt, tmp_fp, pl, list_head) {
+            hash_for_each_safe(fpp->srcpages_hash_list, page_bkt, tmp_fp, pl, list_head) {
                 list_del(&pl->list_head);
                 __free_page(pl->page);
                 kfree(pl);
@@ -233,7 +233,7 @@ static void traverse_copy_page_pools(void)
         struct source_page_list *pl;
 
         pr_info("Physical page %lu:\n", fpp->id);
-        hash_for_each(fpp->hash_headpages, page_bkt, pl, list_head) {
+        hash_for_each(fpp->srcpages_hash_list, page_bkt, pl, list_head) {
             pr_info("  Copy page at %p\n", page_address(pl->page));
         }
     }
@@ -260,7 +260,7 @@ static struct source_page_list *find_page_chain(struct pseudo_mm_pagepool *fpp, 
     struct source_page_list *pl;
     u32 hash = page_hash_function(src_page);
 
-    hash_for_each_possible(fpp->hash_headpages, pl, list_head, hash) {
+    hash_for_each_possible(fpp->srcpages_hash_list, pl, list_head, hash) {
         if (pl->page == src_page) {
             return pl;
         }
@@ -273,10 +273,10 @@ bool isWorH(unsigned long vaddr){
 	return true;
 }
 
-struct hash_headpages *create_hash_headpages(struct pseudo_mm_pagepool *pool, struct page *head_page, unsigned long vaddr, int numa_node, unsigned int nr_pages)
+struct srcpages_hash_list *create_srcpages_hash_list(struct pseudo_mm_pagepool *pool, struct page *head_page, unsigned long vaddr, int numa_node, unsigned int nr_pages)
 {
 	struct pseudo_mm_pagepool *pool;
-    struct hash_headpages *hh;
+    struct srcpages_hash_list *hh;
     unsigned int i;
 	// struct page *head_page;
     struct page *new_page;
@@ -308,17 +308,17 @@ struct hash_headpages *create_hash_headpages(struct pseudo_mm_pagepool *pool, st
     }
 	// vaddr as hash index
 	unsigned int index = hash_ptr((void *)hh->vaddr, POOL_HASH_BITS);
-	hlist_add_head(&hh->hnode, &pool->hash_headpages);
+	hlist_add_head(&hh->hnode, &pool->srcpages_hash_list);
     return hh;
 
 err_free:
     /* 出错时释放已经分配的资源 */
-    free_hash_headpages(hh);
+    free_srcpages_hash_list(hh);
     return ERR_PTR(-ENOMEM);
 }
 
 
-void free_hash_headpages(struct hash_headpages *hh)
+void free_srcpages_hash_list(struct srcpages_hash_list *hh)
 {
     struct list_head *pos, *n;
     list_for_each_safe(pos, n, &hh->page_list) {
@@ -375,43 +375,43 @@ static unsigned long __setup_pool_for_func_vma(int id,
 		if(isWorH(vaddr)){
 			copy_nr_pages=2;
 			numa_node=0;
-			// create_hash_headpages(pseudo_mm_hash, page, vaddr, numa_node,copy_nr_pages);
-			struct hash_headpages *hh;
+			// create_srcpages_hash_list(pseudo_mm_hash, page, vaddr, numa_node,copy_nr_pages);
+			struct srcpages_hash_list *hh;
 			unsigned int i;
-			struct singlepage_in_list *spil;
+			
 			struct page *new_page;
 		
 			hh = kmalloc(sizeof(*hh), GFP_KERNEL);
 			if (!hh)
 				return ERR_PTR(-ENOMEM);
 
-			
 			hh->vaddr = vaddr;
 			hh->head_page = head_page;
 			hh->nr_pages = copy_nr_pages;
-			INIT_LIST_HEAD(&hh->pages_list);
+			INIT_LIST_HEAD(&hh->hnode);
 		
 			/* 为后续页分配新的物理页并拷贝头物理页内容 */
 			for (i = 1; i < copy_nr_pages; i++) {
-				//TODO: add numa_node
+				struct pages_in_list *spil;
+				spil = kmalloc(sizeof(*spil), GFP_KERNEL);
+				if (!spil)
+					return ERR_PTR(-ENOMEM);				
 				new_page = alloc_pages_node(node, GFP_KERNEL, 0);
-				if (unlikely(!new_page))
-					return NULL;
-				//  new_page = alloc_page(GFP_KERNEL);
 				 if (!new_page){
 					ret=ERR_PTR(-ENOMEM);
 					goto err_free;
-				 }	 
+				 }
 				 copy_highpage(new_page, head_page);
 				 spil->vaddr=vaddr;
 				 spil->page=new_page;
 				 spil->is_used=0;
 				 spil->is_vaild=1;
-				 list_add_tail(&singlepage_in_list spil->list, &hh->pages_list);
+				 INIT_LIST_HEAD(&spil->list);
+				 list_add(&spil->list, &hh->pages_list);
 			}
 			// vaddr as hash index
 			unsigned int index = hash_ptr((void *)hh->vaddr, POOL_HASH_BITS);
-			hlist_add_head(&hh->hnode, &pseudo_mm_hash->hash_headpages);
+			hlist_add_head(&hh->hnode, &pseudo_mm_hash->srcpages_hash_list);
 			// return hh;
 		}
 	}
@@ -440,7 +440,7 @@ err_free:
 	// kvfree(pages);
 	// if (pin_page)
 	// 	kfree(pin_page);
-	free_hash_headpages(hh);
+	free_srcpages_hash_list(hh);
     // return ERR_PTR(-ENOMEM);
 	goto out;
 }
@@ -525,7 +525,7 @@ static unsigned long __setup_pt_for_vma_dax(int id,
 		// if(isWorH(vaddr)){
 		// 	copy_nr_pages=2;
 		// 	numa_node=0;
-		// 	create_hash_headpages(pseudo_mm_hash, page, vaddr, numa_node,copy_nr_pages);
+		// 	create_srcpages_hash_list(pseudo_mm_hash, page, vaddr, numa_node,copy_nr_pages);
 		// }
 
 		// if (unlikely(!try_grab_page(page, FOLL_PIN))) {

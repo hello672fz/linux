@@ -25,19 +25,19 @@ struct pseudo_mm {
 struct pseudo_mm_pagepool {
     int funcid;               // unique ID for the funtion
     // struct hlist_node hlist;        // Hash list node for pseudo_mm_pagepool
-    struct hlist_head hash_headpages; // hashlist of pagelist for each source page
-	// struct hlist_head hash_headpages[1024]; item:hash_headpages[i],hashlist_head
+    struct hlist_head srcpages_hash_list; // hashlist of pagelist for each source page
+	// struct hlist_head srcpages_hash_list[1024]; item:srcpages_hash_list[i],hashlist_head
 };
 
-struct hash_headpages{
-	struct hlist_head hnode;	    //for hash insert node
-	struct list_head pages_list;	//pagelist based on source page
-	struct page *head_page;			//source page
+struct srcpages_hash_list{
+	struct hlist_head hnode;	    //for hash insert
+	struct list_head pages_list;	//pagelist based on src page
+	struct page *head_page;			//src page
 	unsigned int list_nr_pages;  
 	unsigned long vaddr;   //page vaddr or hash index
 };
 
-struct singlepage_in_list{
+struct pages_in_list{
 	struct list_head list;
 	struct page *page;
 	unsigned long vaddr;
@@ -48,8 +48,7 @@ struct singlepage_in_list{
 struct pseudo_mm_pin_pages {
 	struct list_head list;
 	long nr_pin_pages;
-	//intra-vma array
-	struct page **pages;
+	struct page **pages;//intra-vma array
 };
 
 struct pseudo_mm_unmap_args {
