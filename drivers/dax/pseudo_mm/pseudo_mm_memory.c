@@ -240,9 +240,7 @@ static struct source_page_list *find_page_chain(struct pseudo_mm_pagepool *fpp, 
     return NULL;
 }
 
-bool isWorH(unsigned long vaddr){
-	return true;
-}
+
 
 // struct srcpage_hlist_node *create_srcpages_hash_list(struct pseudo_mm_pagepool *pool, struct page *head_page, unsigned long vaddr, int numa_node, unsigned int nr_pages)
 // {
@@ -288,6 +286,9 @@ bool isWorH(unsigned long vaddr){
 //     return ERR_PTR(-ENOMEM);
 // }
 
+bool isWorH(unsigned long vaddr){
+	return true;
+}
 
 void free_srcpages_hash_list(struct srcpage_hlist_node *hh)
 {

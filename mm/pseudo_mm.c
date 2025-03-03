@@ -756,7 +756,7 @@ unsigned long pseudo_mm_attach(pid_t pid, int id)
 
 	pseudo_mm = find_pseudo_mm(id);
 	struct mm_struct *mm=pseudo_mm->mm;
-	pr_info("PPPPPPPPPPPPPPPPPPPPPPPPPPPPseudo_mm attach with id %d\n", id);
+	pr_info("Pseudo_mm attach with id %d\n", id);
 	if (!pseudo_mm) {
 		pr_warn("cannot find pseudo_mm with id %d\n", id);
 		return -ENOENT;
