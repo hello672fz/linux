@@ -269,6 +269,64 @@ static struct source_page_list *find_page_chain(struct pseudo_mm_pagepool *fpp, 
     return NULL;
 }
 
+bool isWorH(unsigned long vaddr){
+	return true;
+}
+
+struct hash_headpages *create_hash_headpages(struct pseudo_mm_pagepool *pool, struct page *head_page, unsigned long vaddr, int numa_node, unsigned int nr_pages)
+{
+	struct pseudo_mm_pagepool *pool;
+    struct hash_headpages *hh;
+    unsigned int i;
+	// struct page *head_page;
+    struct page *new_page;
+
+    hh = kmalloc(sizeof(*hh), GFP_KERNEL);
+    if (!hh)
+        return ERR_PTR(-ENOMEM);
+	
+
+	hh->vaddr = vaddr;
+    hh->head_page = head_page;
+    hh->nr_pages = nr_pages;
+    INIT_LIST_HEAD(&hh->page_list);
+
+    /*
+     * 将头物理页加入链表。
+     * 这里假设 struct page 内含有 list_head 成员（如 lru）用于链表操作，
+     * 具体情况根据实际定义调整。
+     */
+    list_add(&head_page->lru, &hh->page_list);
+
+    /* 为后续页分配新的物理页并拷贝头物理页内容 */
+    for (i = 1; i < nr_pages; i++) {
+         new_page = alloc_page(GFP_KERNEL);
+         if (!new_page)
+             goto err_free;
+         copy_highpage(new_page, head_page);
+         list_add_tail(&new_page->lru, &hh->page_list);
+    }
+	// vaddr as hash index
+	unsigned int index = hash_ptr((void *)hh->vaddr, POOL_HASH_BITS);
+	hlist_add_head(&hh->hnode, &pool->hash_headpages);
+    return hh;
+
+err_free:
+    /* 出错时释放已经分配的资源 */
+    free_hash_headpages(hh);
+    return ERR_PTR(-ENOMEM);
+}
+
+
+void free_hash_headpages(struct hash_headpages *hh)
+{
+    struct list_head *pos, *n;
+    list_for_each_safe(pos, n, &hh->page_list) {
+         struct page *p = list_entry(pos, struct page, lru);
+         __free_page(p);
+    }
+    kfree(hh);
+}
 
 /* 
  * setup read-only page table entry for vma in pseudo_mm
@@ -276,6 +334,118 @@ static struct source_page_list *find_page_chain(struct pseudo_mm_pagepool *fpp, 
  * @nr_pages: number of pages needed to be set
  * @pgoff: page offset of dax device
  */
+ //hash pool
+static unsigned long __setup_pool_for_func_vma(int id,
+						struct pseudo_mm *pseudo_mm,
+					    struct vm_area_struct *vma,
+					    unsigned long start,
+					    unsigned long nr_pages,
+					    pgoff_t pgoff)
+{
+	struct pseudo_mm_backend *backend = pseudo_mm_get_backend();
+	struct pseudo_mm_pagepool *pseudo_mm_hash = find_pseudo_mm_hash(id);
+	struct page *head_page, **pages;
+	phys_addr_t phys;
+	pfn_t pfn;
+	unsigned long ret = 0, i, vaddr;
+	unsigned int copy_nr_pages;
+	int numa_node;
+
+	if (!backend->page) {
+		pr_err("do not register mem backend for pseudo_mm\n");
+		return -ENOENT;
+	}
+
+	// Map pages to dax device one by one
+	// since insert_mixed api is insert one pfn at a time.
+	// However, its performance not a big deal, since __setup_pt_for_vma is
+	// called on prepare phase, it will not effect the attach performance.
+	for (i = 0; i < nr_pages; i++) {
+		vaddr = start + (i << PAGE_SHIFT);
+		phys = (page_to_pfn(backend->page) + pgoff + i) << PAGE_SHIFT;
+		if (phys == -1) {
+			pr_warn("pgoff_to_phys(%ld) failed\n", pgoff + i);
+			ret = -EFAULT;
+			goto failed;
+		}
+		
+		pfn = phys_to_pfn_t(phys, PFN_DEV | PFN_MAP);
+		head_page = pfn_t_to_page(pfn);
+
+		if(isWorH(vaddr)){
+			copy_nr_pages=2;
+			numa_node=0;
+			// create_hash_headpages(pseudo_mm_hash, page, vaddr, numa_node,copy_nr_pages);
+			struct hash_headpages *hh;
+			unsigned int i;
+			struct singlepage_in_list *spil;
+			struct page *new_page;
+		
+			hh = kmalloc(sizeof(*hh), GFP_KERNEL);
+			if (!hh)
+				return ERR_PTR(-ENOMEM);
+
+			
+			hh->vaddr = vaddr;
+			hh->head_page = head_page;
+			hh->nr_pages = copy_nr_pages;
+			INIT_LIST_HEAD(&hh->pages_list);
+		
+			/* 为后续页分配新的物理页并拷贝头物理页内容 */
+			for (i = 1; i < copy_nr_pages; i++) {
+				//TODO: add numa_node
+				new_page = alloc_pages_node(node, GFP_KERNEL, 0);
+				if (unlikely(!new_page))
+					return NULL;
+				//  new_page = alloc_page(GFP_KERNEL);
+				 if (!new_page){
+					ret=ERR_PTR(-ENOMEM);
+					goto err_free;
+				 }	 
+				 copy_highpage(new_page, head_page);
+				 spil->vaddr=vaddr;
+				 spil->page=new_page;
+				 spil->is_used=0;
+				 spil->is_vaild=1;
+				 list_add_tail(&singlepage_in_list spil->list, &hh->pages_list);
+			}
+			// vaddr as hash index
+			unsigned int index = hash_ptr((void *)hh->vaddr, POOL_HASH_BITS);
+			hlist_add_head(&hh->hnode, &pseudo_mm_hash->hash_headpages);
+			// return hh;
+		}
+	}
+
+	// pin_page = kmalloc(sizeof(*pin_page), GFP_KERNEL);
+	// if (!pin_page) {
+	// 	ret = -ENOMEM;
+	// 	goto failed;
+	// }
+
+	// BUG_ON(nr_pin_pages != nr_pages);
+	// INIT_LIST_HEAD(&pin_page->list);
+	// pin_page->pages = pages;
+	// pin_page->nr_pin_pages = nr_pin_pages;
+	// list_add(&pin_page->list, &pseudo_mm->pages_list);
+
+out:
+	// if (pgmap) 
+	// 	put_dev_pagemap(pgmap);
+	// dax_read_unlock(id);
+	return ret;
+
+err_free:
+	// if (nr_pin_pages > 0)
+	// 	unpin_user_pages(pages, nr_pin_pages);
+	// kvfree(pages);
+	// if (pin_page)
+	// 	kfree(pin_page);
+	free_hash_headpages(hh);
+    // return ERR_PTR(-ENOMEM);
+	goto out;
+}
+
+
 static unsigned long __setup_pt_for_vma_dax(int id,
 						struct pseudo_mm *pseudo_mm,
 					    struct vm_area_struct *vma,
@@ -285,6 +455,7 @@ static unsigned long __setup_pt_for_vma_dax(int id,
 {
 	struct pseudo_mm_backend *backend = pseudo_mm_get_backend();
 	// struct dev_dax *dev_dax;
+	// struct pseudo_mm_pagepool *pseudo_mm_hash = find_pseudo_mm_hash(id);
 	struct pseudo_mm_pin_pages *pin_page = NULL;
 	struct dev_pagemap *pgmap = NULL;
 	struct page *page, **pages;
@@ -294,8 +465,8 @@ static unsigned long __setup_pt_for_vma_dax(int id,
 	long nr_pin_pages = 0;
 	vm_fault_t vmf_ret;
 	unsigned long ret;
-	unsigned int num_pages=3;
-	int numa_node=0;
+	// unsigned int copy_nr_pages;
+	// int numa_node;
 
 	if (!backend->page) {
 		pr_err("do not register mem backend for pseudo_mm\n");
@@ -330,15 +501,15 @@ static unsigned long __setup_pt_for_vma_dax(int id,
 		}
 		
 		// if(pfn_in_file(phys)){
-		if(i==-1){
-			ret=add_physical_page(id, phys, num_pages, numa_node);
-			if (ret) {
-				return -ENOMEM;
-			}
-			traverse_copy_page_pools();
-			free_copy_page_pools();
-		}
-
+		// if(i==-1){
+		// 	ret=add_physical_page(id, phys, num_pages, numa_node);
+		// 	if (ret) {
+		// 		return -ENOMEM;
+		// 	}
+		// 	traverse_copy_page_pools();
+		// 	free_copy_page_pools();
+		// }
+		
 		pfn = phys_to_pfn_t(phys, PFN_DEV | PFN_MAP);
 		vmf_ret = pseudo_mm_insert_dax(vma, vaddr, pfn);
 		if (unlikely(vmf_ret & VM_FAULT_ERROR)) {
@@ -351,6 +522,11 @@ static unsigned long __setup_pt_for_vma_dax(int id,
 		// pgmap = get_dev_pagemap(pfn_t_to_pfn(pfn), pgmap);
 		// WARN_ON(!pgmap);
 		page = pfn_t_to_page(pfn);
+		// if(isWorH(vaddr)){
+		// 	copy_nr_pages=2;
+		// 	numa_node=0;
+		// 	create_hash_headpages(pseudo_mm_hash, page, vaddr, numa_node,copy_nr_pages);
+		// }
 
 		// if (unlikely(!try_grab_page(page, FOLL_PIN))) {
 		// 	ret = -ENOMEM;
@@ -399,9 +575,6 @@ failed:
 		kfree(pin_page);
 	goto out;
 }
-
-
-
 
 
 /* 
@@ -454,7 +627,7 @@ unsigned long pseudo_mm_setup_pt(int id, unsigned long start,
 				 enum pseudo_mm_pt_type type)
 {
 	struct pseudo_mm *pseudo_mm = find_pseudo_mm(id);
-	struct pseudo_mm_pagepool *pseudo_mm_hash = find_pseudo_mm_hash(id);
+	// struct pseudo_mm_pagepool *pseudo_mm_hash = find_pseudo_mm_hash(id);
 	struct mm_struct *mm;
 	struct vm_area_struct *vma;
 	unsigned long end = start + size;
