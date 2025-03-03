@@ -262,7 +262,7 @@ int create_pseudo_mm_hash(void)
 	// struct pseudo_mm *pseudo_mm;
 	struct xa_limit limit;
 	struct pseudo_mm_pagepool *pseudo_mm_hash;
-	int ret, id, rethash;
+	int id, rethash;
 
 	// mm = mm_alloc_wo_task();
 	// if (!mm)
@@ -279,7 +279,7 @@ int create_pseudo_mm_hash(void)
 
 	pseudo_mm_hash = pseudo_mm_hash_alloc();
 	if (!pseudo_mm_hash) {
-		ret = -ENOMEM;
+		rethash = -ENOMEM;
 		goto drop_pseudo_mm_hash;
 	}
 	INIT_HLIST_NODE(&pseudo_mm_hash->hash_headpages);
@@ -305,7 +305,7 @@ drop_pseudo_mm_hash:
 // 	kmem_cache_free(pseudo_mm_cachep, pseudo_mm);
 // drop_mm:
 // 	mmdrop(mm);
-	return ret;
+	return rethash;
 }
 
 struct pseudo_mm *find_pseudo_mm(int id)

@@ -20,6 +20,22 @@ struct pseudo_mm {
 	struct list_head pages_list;
 };
 
+// Pseudo_mm_pagepool for a specific physical page
+struct pseudo_mm_pagepool {
+    int funcid;               // Unique ID for the funtion mm_pagepool
+    // struct hlist_node hlist;        // Hash list node for pseudo_mm_pagepool
+    struct hlist_node hash_headpages; // Hash table for pagelist based on source pages
+	// struct hlist_head hash_headpages[1024]; item:hash_headpages[i],hashlist_head
+};
+
+struct hash_headpages{
+	struct hlist_node hnode;	
+	struct list_head pages_list;
+	unsigned long vaddr;
+	unsigned int list_nr_pages;  
+};
+
+
 struct pseudo_mm_pin_pages {
 	struct list_head list;
 	long nr_pin_pages;
@@ -39,15 +55,6 @@ struct pseudo_mm_backend {
 	struct file *filp; // discard
 	struct page *page;
 	u32 nr_pages;
-};
-
-
-// Pseudo_mm_pagepool for a specific physical page
-struct pseudo_mm_pagepool {
-    int funcid;               // Unique ID for the funtion mm_pagepool
-    // struct hlist_node hlist;        // Hash list node for pseudo_mm_pagepool
-    struct hlist_node hash_headpages; // Hash table for pagelist based on source pages
-	// struct hlist_head hash_headpages[1024]; item:hash_headpages[i],hashlist_head
 };
 
 
