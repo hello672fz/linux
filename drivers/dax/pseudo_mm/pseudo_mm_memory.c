@@ -27,35 +27,6 @@
 
 
 
-// number of function
-#define HASH_BITS 10
-// number of pagelist
-#define FUNC_PAGES_BITS 10
-// 
-static DEFINE_HASHTABLE(func_hash, HASH_BITS);
-
-
-// Page list based on source page
-struct source_page_list {
-    struct page *page;              // Memory page
-    struct list_head list_head;          // List head & source page
-};
-
-// // Pseudo_mm_pagepool for a specific physical page
-// struct pseudo_mm_pagepool {
-//     int funcid;               // Unique ID for the funtion mm_pagepool
-//     struct hlist_node hlist;        // Hash list node for pseudo_mm_pagepool
-//     DECLARE_HASHTABLE(srcpages_hash_list, 1); // Hash table for pagelist based on source pages
-// 	// struct hlist_head srcpages_hash_list[1024]; item:srcpages_hash_list[i],hashlist_head
-// };
-
-
-// Hash function to calculate the hash value
-static inline u32 hash_function(unsigned long id)
-{
-    return jhash_1word(id, 0);
-}
-
 // Hash function to calculate the hash value for page hash table
 static inline u32 page_hash_function(struct page *src_page)
 {
@@ -273,52 +244,52 @@ bool isWorH(unsigned long vaddr){
 	return true;
 }
 
-struct srcpages_hash_list *create_srcpages_hash_list(struct pseudo_mm_pagepool *pool, struct page *head_page, unsigned long vaddr, int numa_node, unsigned int nr_pages)
-{
-	struct pseudo_mm_pagepool *pool;
-    struct srcpages_hash_list *hh;
-    unsigned int i;
-	// struct page *head_page;
-    struct page *new_page;
+// struct srcpage_hlist_node *create_srcpages_hash_list(struct pseudo_mm_pagepool *pool, struct page *head_page, unsigned long vaddr, int numa_node, unsigned int nr_pages)
+// {
+// 	struct pseudo_mm_pagepool *pool;
+//     struct srcpage_hlist_node *hh;
+//     unsigned int i;
+// 	// struct page *head_page;
+//     struct page *new_page;
 
-    hh = kmalloc(sizeof(*hh), GFP_KERNEL);
-    if (!hh)
-        return ERR_PTR(-ENOMEM);
+//     hh = kmalloc(sizeof(*hh), GFP_KERNEL);
+//     if (!hh)
+//         return ERR_PTR(-ENOMEM);
 	
 
-	hh->vaddr = vaddr;
-    hh->head_page = head_page;
-    hh->nr_pages = nr_pages;
-    INIT_LIST_HEAD(&hh->page_list);
+// 	hh->vaddr = vaddr;
+//     hh->head_page = head_page;
+//     hh->nr_pages = nr_pages;
+//     INIT_LIST_HEAD(&hh->page_list);
 
-    /*
-     * 将头物理页加入链表。
-     * 这里假设 struct page 内含有 list_head 成员（如 lru）用于链表操作，
-     * 具体情况根据实际定义调整。
-     */
-    list_add(&head_page->lru, &hh->page_list);
+//     /*
+//      * 将头物理页加入链表。
+//      * 这里假设 struct page 内含有 list_head 成员（如 lru）用于链表操作，
+//      * 具体情况根据实际定义调整。
+//      */
+//     list_add(&head_page->lru, &hh->page_list);
 
-    /* 为后续页分配新的物理页并拷贝头物理页内容 */
-    for (i = 1; i < nr_pages; i++) {
-         new_page = alloc_page(GFP_KERNEL);
-         if (!new_page)
-             goto err_free;
-         copy_highpage(new_page, head_page);
-         list_add_tail(&new_page->lru, &hh->page_list);
-    }
-	// vaddr as hash index
-	unsigned int index = hash_ptr((void *)hh->vaddr, POOL_HASH_BITS);
-	hlist_add_head(&hh->hnode, &pool->srcpages_hash_list);
-    return hh;
+//     /* 为后续页分配新的物理页并拷贝头物理页内容 */
+//     for (i = 1; i < nr_pages; i++) {
+//          new_page = alloc_page(GFP_KERNEL);
+//          if (!new_page)
+//              goto err_free;
+//          copy_highpage(new_page, head_page);
+//          list_add_tail(&new_page->lru, &hh->page_list);
+//     }
+// 	// vaddr as hash index
+// 	unsigned int index = hash_ptr((void *)hh->vaddr, POOL_HASH_BITS);
+// 	hlist_add_head(&hh->hnode, &pool->srcpages_hash_list);
+//     return hh;
 
-err_free:
-    /* 出错时释放已经分配的资源 */
-    free_srcpages_hash_list(hh);
-    return ERR_PTR(-ENOMEM);
-}
+// err_free:
+//     /* 出错时释放已经分配的资源 */
+//     free_srcpages_hash_list(hh);
+//     return ERR_PTR(-ENOMEM);
+// }
 
 
-void free_srcpages_hash_list(struct srcpages_hash_list *hh)
+void free_srcpages_hash_list(struct srcpage_hlist_node *hh)
 {
     struct list_head *pos, *n;
     list_for_each_safe(pos, n, &hh->page_list) {
@@ -376,7 +347,7 @@ static unsigned long __setup_pool_for_func_vma(int id,
 			copy_nr_pages=2;
 			numa_node=0;
 			// create_srcpages_hash_list(pseudo_mm_hash, page, vaddr, numa_node,copy_nr_pages);
-			struct srcpages_hash_list *hh;
+			struct srcpage_hlist_node *hh;
 			unsigned int i;
 			
 			struct page *new_page;

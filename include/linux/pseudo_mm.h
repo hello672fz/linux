@@ -17,19 +17,19 @@ struct pseudo_mm {
 	struct mm_struct *mm;
 	int id;
 	/* list of pseudo_mm_pin_pages */
-	//inter-vma list
-	struct list_head pages_list;
+	struct list_head pages_list;//inter-vma list
 };
 
 // Pseudo_mm_pagepool for a specific physical page
 struct pseudo_mm_pagepool {
-    int funcid;               // unique ID for the funtion
+    int funcid;               // unique ID
     // struct hlist_node hlist;        // Hash list node for pseudo_mm_pagepool
     struct hlist_head srcpages_hash_list; // hashlist of pagelist for each source page
 	// struct hlist_head srcpages_hash_list[1024]; item:srcpages_hash_list[i],hashlist_head
 };
 
-struct srcpages_hash_list{
+//srcpage_hlist_node
+struct srcpage_hlist_node{
 	struct hlist_head hnode;	    //for hash insert
 	struct list_head pages_list;	//pagelist based on src page
 	struct page *head_page;			//src page
