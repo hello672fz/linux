@@ -3191,6 +3191,8 @@ static vm_fault_t wp_page_copy(struct vm_fault *vmf)
 	struct mmu_notifier_range range;
 	u64 pseudo_mm_start = 0, pseudo_mm_end;
 	int is_pseudo_mm_dax_fault = 0;
+	u64 stcpu=0;
+	ktime_t st;
 
 	delayacct_wpcopy_start();
 
@@ -3201,6 +3203,8 @@ static vm_fault_t wp_page_copy(struct vm_fault *vmf)
 #ifdef PSEUDO_MM_DEBUG
 	if (is_pseudo_mm_dax_fault)
 		pseudo_mm_start = local_clock();
+		stcpu=rdtsc();
+		st=ktime_get();
 #endif
 
 	if (is_zero_pfn(pte_pfn(vmf->orig_pte))) {
@@ -3215,7 +3219,7 @@ static vm_fault_t wp_page_copy(struct vm_fault *vmf)
 			goto oom;
 
 		if (is_pseudo_mm_dax_fault) {
-			// pr_info("pseudo_mm COW for page at VA %#lx, orig_pte: %#lx, new page pfn %#lx\n", vmf->address, vmf->orig_pte.pte, page_to_pfn(new_page));
+			pr_info("pseudo_mm COW for page at VA %#lx, orig_pte: %#lx, new page pfn %#lx\n", vmf->address, vmf->orig_pte.pte, page_to_pfn(new_page));
 			atomic_inc(&mm->pseudo_mm_cow_nr);
 			old_page = pfn_to_page(pte_pfn(vmf->orig_pte));
 			get_page(old_page);
@@ -3349,6 +3353,9 @@ static vm_fault_t wp_page_copy(struct vm_fault *vmf)
 	if (is_pseudo_mm_dax_fault) {
 		pseudo_mm_end = local_clock();
 		trace_printk("wp_page_copy for pseudo_mm spent %lld ns\n", pseudo_mm_end - pseudo_mm_start);
+		pr_info("pseudo_mm COW for page at VA %#lx, orig_pte: %#lx,wp_page_copy for pseudo_mm spent %lld ns\n", vmf->address, vmf->orig_pte.pte,pseudo_mm_end - pseudo_mm_start);
+		pr_info("COW ktime:%lld\n",ktime_to_ns(ktime_get())-ktime_to_ns(st));
+		pr_info("COW cpucycles:%llu\n",rdtsc()-stcpu);
 	}
 #endif
 	delayacct_wpcopy_end();
@@ -5309,8 +5316,14 @@ static vm_fault_t handle_pte_fault(struct vm_fault *vmf)
 		goto unlock;
 	}
 	if (vmf->flags & (FAULT_FLAG_WRITE|FAULT_FLAG_UNSHARE)) {
-		if (!pte_write(entry))
+		if (!pte_write(entry)){
+			u64 stcpu=rdtsc();
+			ktime_t st=ktime_get();
 			return do_wp_page(vmf);
+			printk(KERN_INFO"do_wp_page ktime:%lld\n",ktime_to_ns(ktime_get())-ktime_to_ns(st));
+			pr_info("do_wp_page ktime:%lld\n",ktime_to_ns(ktime_get())-ktime_to_ns(st));
+			pr_info("do_wp_page cpucycles:%llu\n",rdtsc()-stcpu);
+		}
 		else if (likely(vmf->flags & FAULT_FLAG_WRITE))
 			entry = pte_mkdirty(entry);
 	}

@@ -6,7 +6,7 @@
 #include <linux/xarray.h>
 #include <linux/rmap.h>
 
-// #define PSEUDO_MM_DEBUG
+#define PSEUDO_MM_DEBUG
 
 typedef struct {
 	unsigned long val;
