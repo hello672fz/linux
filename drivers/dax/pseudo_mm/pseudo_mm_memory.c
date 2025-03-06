@@ -25,13 +25,13 @@
 #include "pseudo_mm_memory.h"
 
 
+#define POOL_HASH_BITS 10
 
-
-// Hash function to calculate the hash value for page hash table
-static inline u32 page_hash_function(struct page *src_page)
-{
-    return jhash_1word((unsigned long)src_page, 0);
-}
+// // Hash function to calculate the hash value for page hash table
+// static inline u32 page_hash_function(struct page *src_page)
+// {
+//     return jhash_1word((unsigned long)src_page, 0);
+// }
 
 // // Prefetch data from the source page
 // static void prefetch_data(void *src_vaddr)
@@ -40,205 +40,205 @@ static inline u32 page_hash_function(struct page *src_page)
 //     asm volatile ("prefetcht0 (%0)" :: "r" (src_vaddr) : "memory");
 // }
 
-// Allocate and copy pages to a specific NUMA node
-static int allocate_and_copy_pages_numa(struct page *src_page, unsigned int num_pages, int numa_node, struct list_head *one_func_pool)
-{
-    void *src_vaddr, *dst_vaddr;
-    unsigned int i;
+// // Allocate and copy pages to a specific NUMA node
+// static int allocate_and_copy_pages_numa(struct page *src_page, unsigned int num_pages, int numa_node, struct list_head *one_func_pool)
+// {
+//     void *src_vaddr, *dst_vaddr;
+//     unsigned int i;
 
-    // Map the source page to virtual address space
-    src_vaddr = vmap(&src_page, 1, VM_MAP, PAGE_KERNEL);
-    if (!src_vaddr) {
-        pr_err("Failed to map source page\n");
-        return -ENOMEM;
-    }
+//     // Map the source page to virtual address space
+//     src_vaddr = vmap(&src_page, 1, VM_MAP, PAGE_KERNEL);
+//     if (!src_vaddr) {
+//         pr_err("Failed to map source page\n");
+//         return -ENOMEM;
+//     }
 
-    // // Prefetch data from the source page
-    // prefetch_data(src_vaddr);
+//     // // Prefetch data from the source page
+//     // prefetch_data(src_vaddr);
 
-    for (i = 0; i < num_pages; i++) {
-        struct source_page_list *pl;
-        struct page *dst_page;
+//     for (i = 0; i < num_pages; i++) {
+//         struct source_page_list *pl;
+//         struct page *dst_page;
 
-        // Allocate a new page on the specified NUMA node
-        dst_page = alloc_pages_node(numa_node, GFP_KERNEL, 0);
-        if (!dst_page) {
-            pr_err("Failed to allocate memory page on NUMA node %d\n", numa_node);
-            vunmap(src_vaddr);
-            return -ENOMEM;
-        }
+//         // Allocate a new page on the specified NUMA node
+//         dst_page = alloc_pages_node(numa_node, GFP_KERNEL, 0);
+//         if (!dst_page) {
+//             pr_err("Failed to allocate memory page on NUMA node %d\n", numa_node);
+//             vunmap(src_vaddr);
+//             return -ENOMEM;
+//         }
 
-        // Map the destination page to virtual address space
-        dst_vaddr = vmap(&dst_page, 1, VM_MAP, PAGE_KERNEL);
-        if (!dst_vaddr) {
-            pr_err("Failed to map destination page\n");
-            __free_page(dst_page);
-            vunmap(src_vaddr);
-            return -ENOMEM;
-        }
+//         // Map the destination page to virtual address space
+//         dst_vaddr = vmap(&dst_page, 1, VM_MAP, PAGE_KERNEL);
+//         if (!dst_vaddr) {
+//             pr_err("Failed to map destination page\n");
+//             __free_page(dst_page);
+//             vunmap(src_vaddr);
+//             return -ENOMEM;
+//         }
 
-        // Copy data from the source page to the destination page
-        memcpy(dst_vaddr, src_vaddr, PAGE_SIZE);
+//         // Copy data from the source page to the destination page
+//         memcpy(dst_vaddr, src_vaddr, PAGE_SIZE);
 
-        // Unmap the destination page
-        vunmap(dst_vaddr);
+//         // Unmap the destination page
+//         vunmap(dst_vaddr);
 
-        // Add the destination page to the copy page list
-        pl = kmalloc(sizeof(*pl), GFP_KERNEL);
-        if (!pl) {
-            pr_err("Failed to allocate source_page_list structure\n");
-            __free_page(dst_page);
-            vunmap(src_vaddr);
-            return -ENOMEM;
-        }
+//         // Add the destination page to the copy page list
+//         pl = kmalloc(sizeof(*pl), GFP_KERNEL);
+//         if (!pl) {
+//             pr_err("Failed to allocate source_page_list structure\n");
+//             __free_page(dst_page);
+//             vunmap(src_vaddr);
+//             return -ENOMEM;
+//         }
 
-        pl->page = dst_page;
-        list_add(&pl->list_head, one_func_pool);
-    }
+//         pl->page = dst_page;
+//         list_add(&pl->list_head, one_func_pool);
+//     }
 
-    // Unmap the source page
-    vunmap(src_vaddr);
+//     // Unmap the source page
+//     vunmap(src_vaddr);
 
-    return 0;
-}
-
-
-// Add a new physical page and fill to its copy page pool
-static unsigned long add_physical_page(int id, phys_addr_t src_paddr, unsigned int num_pages, int numa_node)
-{
-    struct pseudo_mm_pagepool *fpp;
-    struct page *src_page;
-
-    // Allocate memory for the copy page pool structure
-    fpp = kmalloc(sizeof(*fpp), GFP_KERNEL);
-    if (!fpp) {
-        pr_err("Failed to allocate pseudo_mm_pagepool structure\n");
-        return -ENOMEM;
-    }
-
-    fpp->funcid = id;
-    hash_init(fpp->srcpages_hash_list);
-
-    // Get the source page from the physical address
-    src_page = pfn_to_page(src_paddr >> PAGE_SHIFT);
-    if (!src_page) {
-        pr_err("Invalid source page address\n");
-        kfree(fpp);
-        return -EINVAL;
-    }
-
-    // Allocate and copy pages
-    if (allocate_and_copy_pages_numa(src_page, num_pages, numa_node, &fpp->srcpages_hash_list)) {
-        kfree(fpp);
-        return -ENOMEM;
-    }
-
-    // Calculate the hash value and add the copy page pool to the hash table
-    hash_add(func_hash, &fpp->hlist, hash_function(id));
-
-    pr_info("Successfully added physical page %lu and copied %u pages to NUMA node %d\n", id, num_pages, numa_node);
-
-    return 0;
-}
+//     return 0;
+// }
 
 
-// Free all copy page pools
-static void free_copy_page_pools(void)
-{
-    int bkt;
-    struct pseudo_mm_pagepool *fpp;
-    struct hlist_node *tmp;
+// // Add a new physical page and fill to its copy page pool
+// static unsigned long add_physical_page(int id, phys_addr_t src_paddr, unsigned int num_pages, int numa_node)
+// {
+//     struct pseudo_mm_pagepool *fpp;
+//     struct page *src_page;
 
-    hash_for_each_safe(func_hash, bkt, tmp, fpp, hlist) {
-        int page_bkt;
-        struct source_page_list *pl;
-        struct hlist_node *tmp_fp;
+//     // Allocate memory for the copy page pool structure
+//     fpp = kmalloc(sizeof(*fpp), GFP_KERNEL);
+//     if (!fpp) {
+//         pr_err("Failed to allocate pseudo_mm_pagepool structure\n");
+//         return -ENOMEM;
+//     }
 
-        hash_for_each_safe(fpp->srcpages_hash_list, page_bkt, tmp_fp, pl, list_head) {
-            list_del(&pl->list_head);
-            __free_page(pl->page);
-            kfree(pl);
-        }
+//     fpp->funcid = id;
+//     hash_init(fpp->srcpages_hash_list);
 
-        hash_del(&fpp->hlist);
-        kfree(fpp);
-    }
-}
+//     // Get the source page from the physical address
+//     src_page = pfn_to_page(src_paddr >> PAGE_SHIFT);
+//     if (!src_page) {
+//         pr_err("Invalid source page address\n");
+//         kfree(fpp);
+//         return -EINVAL;
+//     }
+
+//     // Allocate and copy pages
+//     if (allocate_and_copy_pages_numa(src_page, num_pages, numa_node, &fpp->srcpages_hash_list)) {
+//         kfree(fpp);
+//         return -ENOMEM;
+//     }
+
+//     // Calculate the hash value and add the copy page pool to the hash table
+//     hash_add(func_hash, &fpp->hlist, hash_function(id));
+
+//     pr_info("Successfully added physical page %lu and copied %u pages to NUMA node %d\n", id, num_pages, numa_node);
+
+//     return 0;
+// }
 
 
-// Remove a physical page and its copy page pool
-static void remove_physical_page(unsigned long id)
-{
-    struct pseudo_mm_pagepool *fpp;
-    u32 hash = hash_function(id);
+// // Free all copy page pools
+// static void free_copy_page_pools(void)
+// {
+//     int bkt;
+//     struct pseudo_mm_pagepool *fpp;
+//     struct hlist_node *tmp;
 
-    hash_for_each_possible(func_hash, fpp, hlist, hash) {
-        if (fpp->funcid == id) {
-            int page_bkt;
-            struct source_page_list *pl;
-            struct hlist_node *tmp_fp;
+//     hash_for_each_safe(func_hash, bkt, tmp, fpp, hlist) {
+//         int page_bkt;
+//         struct source_page_list *pl;
+//         struct hlist_node *tmp_fp;
 
-            hash_for_each_safe(fpp->srcpages_hash_list, page_bkt, tmp_fp, pl, list_head) {
-                list_del(&pl->list_head);
-                __free_page(pl->page);
-                kfree(pl);
-            }
+//         hash_for_each_safe(fpp->srcpages_hash_list, page_bkt, tmp_fp, pl, list_head) {
+//             list_del(&pl->list_head);
+//             __free_page(pl->page);
+//             kfree(pl);
+//         }
 
-            hash_del(&fpp->hlist);
-            kfree(fpp);
-            pr_info("Successfully removed physical page %lu\n", id);
-            return;
-        }
-    }
-    pr_err("Physical page %lu not found\n", id);
-}
+//         hash_del(&fpp->hlist);
+//         kfree(fpp);
+//     }
+// }
 
-// Traverse all copy page pools
-static void traverse_copy_page_pools(void)
-{
-    int bkt;
-    struct pseudo_mm_pagepool *fpp;
 
-    hash_for_each(func_hash, bkt, fpp, hlist) {
-        int page_bkt;
-        struct source_page_list *pl;
+// // Remove a physical page and its copy page pool
+// static void remove_physical_page(unsigned long id)
+// {
+//     struct pseudo_mm_pagepool *fpp;
+//     u32 hash = hash_function(id);
 
-        pr_info("Physical page %lu:\n", fpp->id);
-        hash_for_each(fpp->srcpages_hash_list, page_bkt, pl, list_head) {
-            pr_info("  Copy page at %p\n", page_address(pl->page));
-        }
-    }
-}
+//     hash_for_each_possible(func_hash, fpp, hlist, hash) {
+//         if (fpp->funcid == id) {
+//             int page_bkt;
+//             struct source_page_list *pl;
+//             struct hlist_node *tmp_fp;
 
-// Find a copy page pool by ID
-static struct pseudo_mm_pagepool *find_function_page_pool(unsigned long id)
-{
-    struct pseudo_mm_pagepool *fpp;
-    u32 hash = hash_function(id);
+//             hash_for_each_safe(fpp->srcpages_hash_list, page_bkt, tmp_fp, pl, list_head) {
+//                 list_del(&pl->list_head);
+//                 __free_page(pl->page);
+//                 kfree(pl);
+//             }
 
-    hash_for_each_possible(func_hash, fpp, hlist, hash) {
-        if (fpp->funcid == id) {
-            return fpp;
-        }
-    }
+//             hash_del(&fpp->hlist);
+//             kfree(fpp);
+//             pr_info("Successfully removed physical page %lu\n", id);
+//             return;
+//         }
+//     }
+//     pr_err("Physical page %lu not found\n", id);
+// }
 
-    return NULL;
-}
+// // Traverse all copy page pools
+// static void traverse_copy_page_pools(void)
+// {
+//     int bkt;
+//     struct pseudo_mm_pagepool *fpp;
 
-// Find a free page chain by PFN
-static struct source_page_list *find_page_chain(struct pseudo_mm_pagepool *fpp, struct page *src_page)
-{
-    struct source_page_list *pl;
-    u32 hash = page_hash_function(src_page);
+//     hash_for_each(func_hash, bkt, fpp, hlist) {
+//         int page_bkt;
+//         struct source_page_list *pl;
 
-    hash_for_each_possible(fpp->srcpages_hash_list, pl, list_head, hash) {
-        if (pl->page == src_page) {
-            return pl;
-        }
-    }
+//         pr_info("Physical page %lu:\n", fpp->id);
+//         hash_for_each(fpp->srcpages_hash_list, page_bkt, pl, list_head) {
+//             pr_info("  Copy page at %p\n", page_address(pl->page));
+//         }
+//     }
+// }
 
-    return NULL;
-}
+// // Find a copy page pool by ID
+// static struct pseudo_mm_pagepool *find_function_page_pool(unsigned long id)
+// {
+//     struct pseudo_mm_pagepool *fpp;
+//     u32 hash = hash_function(id);
+
+//     hash_for_each_possible(func_hash, fpp, hlist, hash) {
+//         if (fpp->funcid == id) {
+//             return fpp;
+//         }
+//     }
+
+//     return NULL;
+// }
+
+// // Find a free page chain by PFN
+// static struct source_page_list *find_page_chain(struct pseudo_mm_pagepool *fpp, struct page *src_page)
+// {
+//     struct source_page_list *pl;
+//     u32 hash = page_hash_function(src_page);
+
+//     hash_for_each_possible(fpp->srcpages_hash_list, pl, list_head, hash) {
+//         if (pl->page == src_page) {
+//             return pl;
+//         }
+//     }
+
+//     return NULL;
+// }
 
 
 
@@ -290,13 +290,33 @@ bool isWorH(unsigned long vaddr){
 	return true;
 }
 
+
+struct srcpage_hlist_node *find_srcpage(struct pseudo_mm_pagepool *pool, unsigned long vaddr) {
+    if (!pool) return NULL;
+
+    unsigned int index = hash_ptr((void *)vaddr, POOL_HASH_BITS) % 1024;
+    struct hlist_head *head = &pool->srcpages_hash_list[index];
+    struct srcpage_hlist_node *node;
+
+    hlist_for_each_entry(node, head, hnode) {
+        if (node->vaddr == vaddr) {
+            return node;
+        }
+    }
+    return NULL;
+}
+
+
 void free_srcpages_hash_list(struct srcpage_hlist_node *hh)
 {
-    struct list_head *pos, *n;
-    list_for_each_safe(pos, n, &hh->page_list) {
-         struct page *p = list_entry(pos, struct page, lru);
-         __free_page(p);
+    struct pages_in_list *spil, *tmp;
+
+    list_for_each_entry_safe(spil, tmp, &hh->pages_list, list) {
+        __free_page(spil->page);
+        list_del(&spil->list);
+        kfree(spil);             
     }
+    hlist_del(&hh->hnode);
     kfree(hh);
 }
 
@@ -308,8 +328,8 @@ void free_srcpages_hash_list(struct srcpage_hlist_node *hh)
  */
  //hash pool
 static unsigned long __setup_pool_for_func_vma(int id,
-						struct pseudo_mm *pseudo_mm,
-					    struct vm_area_struct *vma,
+						// struct pseudo_mm *pseudo_mm,
+					    // struct vm_area_struct *vma,
 					    unsigned long start,
 					    unsigned long nr_pages,
 					    pgoff_t pgoff)
@@ -338,7 +358,8 @@ static unsigned long __setup_pool_for_func_vma(int id,
 		if (phys == -1) {
 			pr_warn("pgoff_to_phys(%ld) failed\n", pgoff + i);
 			ret = -EFAULT;
-			goto failed;
+			goto err_free;
+			// goto out;
 		}
 		
 		pfn = phys_to_pfn_t(phys, PFN_DEV | PFN_MAP);
@@ -359,7 +380,7 @@ static unsigned long __setup_pool_for_func_vma(int id,
 
 			hh->vaddr = vaddr;
 			hh->head_page = head_page;
-			hh->nr_pages = copy_nr_pages;
+			hh->list_nr_pages = copy_nr_pages;
 			INIT_LIST_HEAD(&hh->hnode);
 		
 			/* 为后续页分配新的物理页并拷贝头物理页内容 */
@@ -368,9 +389,10 @@ static unsigned long __setup_pool_for_func_vma(int id,
 				spil = kmalloc(sizeof(*spil), GFP_KERNEL);
 				if (!spil)
 					return ERR_PTR(-ENOMEM);				
-				new_page = alloc_pages_node(node, GFP_KERNEL, 0);
+				new_page = alloc_pages_node(numa_node, GFP_KERNEL, 0);
 				 if (!new_page){
 					ret=ERR_PTR(-ENOMEM);
+					free_srcpages_hash_list(hh);
 					goto err_free;
 				 }
 				 copy_highpage(new_page, head_page);
@@ -382,8 +404,9 @@ static unsigned long __setup_pool_for_func_vma(int id,
 				 list_add(&spil->list, &hh->pages_list);
 			}
 			// vaddr as hash index
-			unsigned int index = hash_ptr((void *)hh->vaddr, POOL_HASH_BITS);
-			hlist_add_head(&hh->hnode, &pseudo_mm_hash->srcpages_hash_list);
+			unsigned int index = hash_ptr((void *)vaddr, 10) % 1024;
+			// INIT_HLIST_HEAD(&pseudo_mm_hash->srcpages_hash_list[index]);
+        	hlist_add_head(&hh->hnode, &pseudo_mm_hash->srcpages_hash_list[index]);
 			// return hh;
 		}
 	}
@@ -412,7 +435,8 @@ err_free:
 	// kvfree(pages);
 	// if (pin_page)
 	// 	kfree(pin_page);
-	free_srcpages_hash_list(hh);
+	// free_srcpages_hash_list(hh);
+	pr_info("__setup_pool_for_func_vma failed\n");
     // return ERR_PTR(-ENOMEM);
 	goto out;
 }
@@ -436,7 +460,7 @@ static unsigned long __setup_pt_for_vma_dax(int id,
 	unsigned long ret = 0, i, vaddr;
 	long nr_pin_pages = 0;
 	vm_fault_t vmf_ret;
-	unsigned long ret;
+	// unsigned long ret;
 	// unsigned int copy_nr_pages;
 	// int numa_node;
 
@@ -603,7 +627,7 @@ unsigned long pseudo_mm_setup_pt(int id, unsigned long start,
 	struct mm_struct *mm;
 	struct vm_area_struct *vma;
 	unsigned long end = start + size;
-	unsigned long ret;
+	unsigned long ret,ret1;
 
 	if (!pseudo_mm)
 		return -ENOENT;
@@ -633,10 +657,12 @@ unsigned long pseudo_mm_setup_pt(int id, unsigned long start,
 	}
 
 	switch (type) {
-	case DAX_MEM:
+	case DAX_MEM:{
 		ret = __setup_pt_for_vma_dax(id,pseudo_mm, vma, start,
 					     size >> PAGE_SHIFT, pgoff);
-		break;
+		ret1 = __setup_pool_for_func_vma(id,start,size >> PAGE_SHIFT,pgoff);
+		break;	
+	}
 	case RDMA_MEM:
 		ret = __setup_pt_for_vma_rdma(pseudo_mm, vma, start,
 					      size >> PAGE_SHIFT, pgoff);
@@ -646,7 +672,7 @@ unsigned long pseudo_mm_setup_pt(int id, unsigned long start,
 	}
 out:
 	mmap_read_unlock(mm);
-	return ret;
+	return ret1;
 }
 
 unsigned long pseudo_mm_bring_back(int id, unsigned long start,

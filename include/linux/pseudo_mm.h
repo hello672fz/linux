@@ -24,7 +24,7 @@ struct pseudo_mm {
 struct pseudo_mm_pagepool {
     int funcid;               // unique ID
     // struct hlist_node hlist;        // Hash list node for pseudo_mm_pagepool
-    struct hlist_head srcpages_hash_list; // hashlist of pagelist for each source page
+    struct hlist_head srcpages_hash_list[1024]; // hashlist of pagelist for each source page
 	// struct hlist_head srcpages_hash_list[1024]; item:srcpages_hash_list[i],hashlist_head
 };
 
@@ -43,7 +43,7 @@ struct pages_in_list{
 	unsigned long vaddr;
 	int is_used;
 	int is_vaild;
-}
+};
 
 struct pseudo_mm_pin_pages {
 	struct list_head list;

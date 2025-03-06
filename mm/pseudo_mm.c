@@ -282,7 +282,12 @@ int create_pseudo_mm_hash(void)
 		rethash = -ENOMEM;
 		goto drop_pseudo_mm_hash;
 	}
-	INIT_HLIST_NODE(&pseudo_mm_hash->hash_headpages);
+
+	for (int i = 0; i < 1024; i++) {
+		INIT_HLIST_HEAD(&pseudo_mm_hash->srcpages_hash_list[i]);
+	}
+	
+	// INIT_HLIST_HEAD(&pseudo_mm_hash->srcpages_hash_list);
 
 
 	// insert newly created pseudo into xarray
@@ -362,19 +367,32 @@ static void put_pseudo_mm(struct pseudo_mm *pseudo_mm)
 
 static void put_pseudo_mm_hash(struct pseudo_mm_pagepool *pseudo_mm_hash)
 {
-	struct pseudo_mm_pin_list *pin_list, *tmp;	
-	hlist_for_each_entry_safe(pin_page, tmp, &pseudo_mm_hash->hash_headpages, hlist) {
+	struct srcpage_hlist_node *node, *tmp;	
+	hlist_for_each_entry_safe(node, tmp, &pseudo_mm_hash->srcpages_hash_list, hlist) {
 		list_del(&pin_page->list);
 		unpin_user_pages(pin_page->pages, pin_page->nr_pin_pages);
 		kvfree(pin_page->pages);
 		kfree(pin_page);
 	}
-	if (pseudo_mm_hash->hash_headpages)
-		mmput(pseudo_mm->mm);
 	if (pseudo_mm_hash->funcid > 0)
 		xa_erase(&pseudo_mm_hash_array, pseudo_mm_hash->funcid);
 	kmem_cache_free(pseudo_mm_hash_cachep, pseudo_mm_hash);
 }
+
+
+void free_srcpages_hash_list(struct srcpage_hlist_node *hh)
+{
+    struct pages_in_list *spil, *tmp;
+
+    list_for_each_entry_safe(spil, tmp, &hh->pages_list, list) {
+        __free_page(spil->page);
+        list_del(&spil->list);
+        kfree(spil);             
+    }
+    hlist_del(&hh->hnode);
+    kfree(hh);
+}
+
 
 
 void put_pseudo_mm_with_id(int id)
