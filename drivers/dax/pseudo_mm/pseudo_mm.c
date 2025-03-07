@@ -163,7 +163,7 @@ static inline long _register_backend_memory(void *__user args)
 static long pseudo_mm_unlocked_ioctl(struct file *filp, unsigned int cmd,
 				     unsigned long args)
 {
-	int pseudo_mm_id, pseudo_mm_hash_id, fd;
+	int pseudo_mm_id, page_pool_id, fd;
 	long err = 0;
 	long phy_addr = 0;
 	pid_t pid;
@@ -181,8 +181,8 @@ static long pseudo_mm_unlocked_ioctl(struct file *filp, unsigned int cmd,
 	case PSEUDO_MM_IOC_CREATE:
 		// create a new pseudo_mm and return the id of it
 		pseudo_mm_id = create_pseudo_mm();
-		pseudo_mm_hash_id = create_pseudo_mm_hash();
-		if (pseudo_mm_id < 0||pseudo_mm_hash_id!=pseudo_mm_id)
+		page_pool_id = create_func_page_pool();
+		if (pseudo_mm_id < 0||page_pool_id!=pseudo_mm_id)
 			return pseudo_mm_id;
 		err = copy_to_user((void *)args, &pseudo_mm_id,
 				   sizeof(pseudo_mm_id));
@@ -195,7 +195,7 @@ static long pseudo_mm_unlocked_ioctl(struct file *filp, unsigned int cmd,
 		if (err)
 			return err;
 		put_pseudo_mm_with_id(pseudo_mm_id);
-		put_pseudo_mm_hash_with_id(pseudo_mm_id);
+		put_page_pool_with_id(pseudo_mm_id);
 		break;
 	case PSEUDO_MM_IOC_ADD_MAP:
 		err = _pseudo_mm_add_map((void *)args);

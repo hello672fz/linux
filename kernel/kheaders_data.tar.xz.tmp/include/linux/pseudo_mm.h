@@ -39,9 +39,9 @@ struct pseudo_mm_backend {
 };
 
 // Pseudo_mm_pagepool for a specific physical page
-struct pseudo_mm_pagepool {
+struct func_page_pool {
     int funcid;               // Unique ID for the funtion mm_pagepool
-    // struct hlist_node hlist;        // Hash list node for pseudo_mm_pagepool
+    // struct hlist_node hlist;        // Hash list node for func_page_pool
     struct hlist_node hash_headpages; // Hash table for pagelist based on source pages
 	// struct hlist_head hash_headpages[1024]; item:hash_headpages[i],hashlist_head
 };
@@ -80,9 +80,9 @@ int pseudo_mm_rdma_prefer_node(void);
  * return the id of that pseudo_mm, which can be used to find_pseudo_mm()
  */
 int create_pseudo_mm(void);
-int create_pseudo_mm_hash(void);
+int create_func_page_pool(void);
 struct pseudo_mm *find_pseudo_mm(int id);
-struct pseudo_mm_pagepool *find_pseudo_mm_hash(int id);
+struct func_page_pool *find_page_pool(int id);
 
 /*
  * put_pseudo_mm_with_id() - delete the pseudo_mm corresponding to id
@@ -90,7 +90,7 @@ struct pseudo_mm_pagepool *find_pseudo_mm_hash(int id);
  * all pseudo_mm
  */
 void put_pseudo_mm_with_id(int id);
-void put_pseudo_mm_hash_with_id(int id);
+void put_page_pool_with_id(int id);
 /*
  * Add a memory mapping to this pseudo_mm.
  * This will not fill content of the physical page.

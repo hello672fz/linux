@@ -26,18 +26,20 @@
 
 /* XArray used for id allocation */
 DEFINE_XARRAY_ALLOC1(pseudo_mm_array);
-DEFINE_XARRAY_ALLOC1(pseudo_mm_hash_array);
+DEFINE_XARRAY_ALLOC1(page_pool_array);
 /* kmemcache for pseudo_mm struct */
 static struct kmem_cache *pseudo_mm_cachep;
-static struct kmem_cache *pseudo_mm_hash_cachep;
+// static struct kmem_cache *page_pool_cachep;
 static struct pseudo_mm_backend backend = {.filp = NULL, .page = NULL, .nr_pages = 0};
 static pseudo_mm_rdma_pf_ops_t *pseudo_mm_rdma_pf_ops = NULL;
 static int __pseudo_mm_rdma_prefer_node = NUMA_NO_NODE;
 
 #define pseudo_mm_alloc() (kmem_cache_alloc(pseudo_mm_cachep, GFP_KERNEL))
-#define pseudo_mm_hash_alloc() (kmem_cache_alloc(pseudo_mm_hash_cachep, GFP_KERNEL))
+// #define page_pool_alloc() (kmem_cache_alloc(page_pool_cachep, GFP_KERNEL))
 
 #define PSEUDO_MM_ID_MAX INT_MAX
+
+// #define HASH_BITS 10 
 
 #ifdef PSEUDO_MM_DEBUG
 static bool __maybe_unused show_rmap_vma(struct folio *folio,
@@ -83,16 +85,16 @@ int __init pseudo_mm_cache_init(void)
 	return 0;
 }
 
-int __init pseudo_mm_hash_cache_init(void)
-{
-	pseudo_mm_hash_cachep = KMEM_CACHE(pseudo_mm_pagepool, SLAB_PANIC | SLAB_ACCOUNT);
-	if (!pseudo_mm_hash_cachep)
-		return -ENOMEM;
-	return 0;
-}
+// int __init page_pool_cache_init(void)
+// {
+// 	page_pool_cachep = KMEM_CACHE(func_page_pool, SLAB_PANIC | SLAB_ACCOUNT);
+// 	if (!page_pool_cachep)
+// 		return -ENOMEM;
+// 	return 0;
+// }
 
 postcore_initcall(pseudo_mm_cache_init);
-postcore_initcall(pseudo_mm_hash_cache_init);
+// postcore_initcall(page_pool_cache_init);
 
 
 unsigned long register_pseudo_mm_rdma_pf_handler(pseudo_mm_rdma_pf_ops_t *op,
@@ -221,96 +223,142 @@ inline bool pseudo_mm_rdma_pf_handler_enable(void)
  * Return its id (> 0) when SUCCESS, return errno otherwise
  */
 
- int create_pseudo_mm(void)
- {
-	 struct mm_struct *mm;
-	 struct pseudo_mm *pseudo_mm;
-	 struct xa_limit limit;
-	 int ret, id;
- 
-	 mm = mm_alloc_wo_task();
-	 if (!mm)
-		 return -ENOMEM;
- 
-	 pseudo_mm = pseudo_mm_alloc();
-	 if (!pseudo_mm) {
-		 ret = -ENOMEM;
-		 goto drop_mm;
-	 }
-	 pseudo_mm->mm = mm;
-	 INIT_LIST_HEAD(&pseudo_mm->pages_list);
- 
-	 // insert newly created pseudo into xarray
-	 limit = XA_LIMIT(1, PSEUDO_MM_ID_MAX);
-	 ret = xa_alloc(&pseudo_mm_array, &id, pseudo_mm, limit, GFP_KERNEL);
-	 if (ret < 0)
-		 goto drop_pseudo_mm;
- 
-	 pseudo_mm->id = id;
-	 return id;
- 
- drop_pseudo_mm:
-	 kmem_cache_free(pseudo_mm_cachep, pseudo_mm);
- drop_mm:
-	 mmdrop(mm);
-	 return ret;
- }
-
-int create_pseudo_mm_hash(void)
+int create_pseudo_mm(void)
 {
-	// struct mm_struct *mm;
-	// struct pseudo_mm *pseudo_mm;
+	struct mm_struct *mm;
+	struct pseudo_mm *pseudo_mm;
 	struct xa_limit limit;
-	struct pseudo_mm_pagepool *pseudo_mm_hash;
-	int id, rethash;
+	int ret, id;
 
-	// mm = mm_alloc_wo_task();
-	// if (!mm)
-	// 	return -ENOMEM;
+	mm = mm_alloc_wo_task();
+	if (!mm)
+		return -ENOMEM;
 
-	// pseudo_mm = pseudo_mm_alloc();
-	// if (!pseudo_mm) {
-	// 	ret = -ENOMEM;
-	// 	goto drop_mm;
-	// }
-	// pseudo_mm->mm = mm;
-	// INIT_LIST_HEAD(&pseudo_mm->pages_list);
-
-
-	pseudo_mm_hash = pseudo_mm_hash_alloc();
-	if (!pseudo_mm_hash) {
-		rethash = -ENOMEM;
-		goto drop_pseudo_mm_hash;
+	pseudo_mm = pseudo_mm_alloc();
+	if (!pseudo_mm) {
+		ret = -ENOMEM;
+		goto drop_mm;
 	}
-
-	for (int i = 0; i < 1024; i++) {
-		INIT_HLIST_HEAD(&pseudo_mm_hash->srcpages_hash_list[i]);
-	}
-	
-	// INIT_HLIST_HEAD(&pseudo_mm_hash->srcpages_hash_list);
-
+	pseudo_mm->mm = mm;
+	INIT_LIST_HEAD(&pseudo_mm->pages_list);
 
 	// insert newly created pseudo into xarray
 	limit = XA_LIMIT(1, PSEUDO_MM_ID_MAX);
-	rethash = xa_alloc(&pseudo_mm_hash_array, &id, pseudo_mm_hash, limit, GFP_KERNEL);
-	// ret = xa_alloc(&pseudo_mm_array, &id, pseudo_mm, limit, GFP_KERNEL);
-	// if (ret < 0)
-	// 	goto drop_pseudo_mm;
-	if (rethash < 0)
-		goto drop_pseudo_mm_hash;
+	ret = xa_alloc(&pseudo_mm_array, &id, pseudo_mm, limit, GFP_KERNEL);
+	if (ret < 0)
+		goto drop_pseudo_mm;
 
-	pseudo_mm_hash->funcid = id;
+	pseudo_mm->id = id;
+	pr_debug("create_func_page_pool created:%d\n",pseudo_mm->id);
 
 	return id;
 
+drop_pseudo_mm:
+	kmem_cache_free(pseudo_mm_cachep, pseudo_mm);
+drop_mm:
+	mmdrop(mm);
+	return ret;
+}
 
-drop_pseudo_mm_hash:
-	kmem_cache_free(pseudo_mm_hash_cachep, pseudo_mm_hash);
-// drop_pseudo_mm:
-// 	kmem_cache_free(pseudo_mm_cachep, pseudo_mm);
-// drop_mm:
-// 	mmdrop(mm);
-	return rethash;
+// rb_root
+//  int create_func_page_pool(void)
+//  {
+// 	 struct xa_limit limit;
+// 	 struct func_page_pool *fpp;
+// 	 int id, ret;
+ 
+// 	fpp = kmalloc(sizeof(*fpp),GFP_KERNEL);
+	
+// 	 if (!fpp) {
+// 		 ret = -ENOMEM;
+// 		 goto drop_page_pool;
+// 	 }
+// 	 fpp->special_pages=RB_ROOT;
+ 
+// 	 // insert newly created pseudo into xarray
+// 	 limit = XA_LIMIT(1, PSEUDO_MM_ID_MAX);
+// 	 ret = xa_alloc(&page_pool_array, &id, fpp, limit, GFP_KERNEL);
+// 	 // ret = xa_alloc(&pseudo_mm_array, &id, pseudo_mm, limit, GFP_KERNEL);
+// 	 // if (ret < 0)
+// 	 // 	goto drop_pseudo_mm;
+// 	 if (ret < 0)
+// 		 goto drop_page_pool;
+ 
+// 	 fpp->id = id;
+ 
+// 	 return id;
+ 
+//  drop_page_pool:
+// 	 kmem_cache_free(page_pool_cachep, fpp);
+//  // drop_pseudo_mm:
+//  // 	kmem_cache_free(pseudo_mm_cachep, pseudo_mm);
+//  // drop_mm:
+//  // 	mmdrop(mm);
+// 	 return ret;
+//  }
+
+
+
+int create_func_page_pool(void)
+{
+	struct xa_limit limit;
+	struct func_page_pool *fpp;
+	spinlock_t *bucket_locks;
+	struct hlist_head *buckets;
+	int id, ret;
+
+	fpp=kmalloc(sizeof(*fpp),GFP_KERNEL);
+	if (!fpp) {
+		ret = -ENOMEM;
+		goto failed_page_pool;
+	}
+	pr_info("create_func_page_pool start!!!!!!!!!!!\n");
+	//Initialize hashtable and lock
+	fpp->hash_bits=10;
+	int hnum=1<<(fpp->hash_bits);
+	buckets = kmalloc_array(hnum,sizeof(struct hlist_head),GFP_KERNEL);
+	pr_info("Buckets address %llx\n", buckets);
+	if(!buckets){
+		ret = -ENOMEM;
+		goto drop_page_pool;
+	}
+
+	bucket_locks = kmalloc_array(hnum,sizeof(spinlock_t),GFP_KERNEL);
+	pr_info("Buckets locks address %llx\n", bucket_locks);
+	if(!bucket_locks){
+		ret = -ENOMEM;
+		goto drop_page_pool;
+	}
+
+	fpp->buckets=buckets;
+	fpp->bucket_locks=bucket_locks;
+	fpp->id = id;
+	atomic_set(&fpp->refcount, 1);
+
+	for (int i = 0; i < hnum; i++) {
+		pr_info("Initializing bucket %d at address %llx\n", i, &fpp->buckets[i]);
+		pr_info("Initializing bucket_lock %d at address %llx\n", i, &fpp->bucket_locks[i]);
+		INIT_HLIST_HEAD(&fpp->buckets[i]);
+		spin_lock_init(&fpp->bucket_locks[i]);
+	}
+
+	// insert newly created pagepool into xarray
+	limit = XA_LIMIT(1, PSEUDO_MM_ID_MAX);
+	ret = xa_alloc(&page_pool_array, &id, fpp, limit, GFP_KERNEL);
+	if (ret < 0)
+		goto drop_page_pool;
+
+	pr_info("create_func_page_pool created:%d\n",fpp->id);
+	return id;
+
+drop_page_pool:
+	kfree(fpp->buckets);
+	kfree(fpp->bucket_locks);
+	kfree(fpp);
+	return ret;
+
+failed_page_pool:
+	return ret;
 }
 
 struct pseudo_mm *find_pseudo_mm(int id)
@@ -331,9 +379,9 @@ struct pseudo_mm *find_pseudo_mm(int id)
 	return pseudo_mm;
 }
 
-struct pseudo_mm_pagepool *find_pseudo_mm_hash(int id)
+struct func_page_pool *find_page_pool(int id)
 {
-	struct pseudo_mm_pagepool *pseudo_mm_hash = NULL;
+	struct func_page_pool *fpp = NULL;
 	unsigned long orig_id;
 
 	// invalid id
@@ -344,9 +392,9 @@ struct pseudo_mm_pagepool *find_pseudo_mm_hash(int id)
 	}
 
 	orig_id = id;
-	pseudo_mm_hash = xa_find(&pseudo_mm_hash_array, &orig_id, orig_id, XA_PRESENT);
-	WARN_ON(pseudo_mm_hash && pseudo_mm_hash->funcid != id);
-	return pseudo_mm_hash;
+	fpp = xa_find(&page_pool_array, &orig_id, orig_id, XA_PRESENT);
+	WARN_ON(fpp && fpp->id != id);
+	return fpp;
 }
 
 static void put_pseudo_mm(struct pseudo_mm *pseudo_mm)
@@ -365,35 +413,51 @@ static void put_pseudo_mm(struct pseudo_mm *pseudo_mm)
 	kmem_cache_free(pseudo_mm_cachep, pseudo_mm);
 }
 
-static void put_pseudo_mm_hash(struct pseudo_mm_pagepool *pseudo_mm_hash)
+static void put_page_pool(struct func_page_pool *fpp)
 {
-	struct srcpage_hlist_node *node, *tmp;	
-	hlist_for_each_entry_safe(node, tmp, &pseudo_mm_hash->srcpages_hash_list, hlist) {
-		list_del(&pin_page->list);
-		unpin_user_pages(pin_page->pages, pin_page->nr_pin_pages);
-		kvfree(pin_page->pages);
-		kfree(pin_page);
+	int bucket_num=1<<(fpp->hash_bits);
+	for(int i=0;i< bucket_num;i++){
+		struct special_page_entry *bucketnode;
+		struct hlist_node *tmp;
+		unsigned long flags;
+
+		//add lock before delete the bucket
+		spin_lock_irqsave(&fpp->bucket_locks[i],flags);
+
+		//struct,stroage of hlist_node, hlist_head, hnode name in struct 
+		hlist_for_each_entry_safe(bucketnode,tmp,&fpp->buckets[i],node){
+			struct copy_page *cpage,*tmpp;
+			list_for_each_entry_safe(cpage, tmpp, &bucketnode->free_copies,list) {
+				//release phy-page
+				__free_page(cpage->page);
+				//del node
+				list_del(&cpage->list);
+				//del struct
+				kfree(cpage);
+			}
+			list_for_each_entry_safe(cpage, tmpp, &bucketnode->used_copies,list) {
+				//release phy-page
+				__free_page(cpage->page);
+				//del node
+				list_del(&cpage->list);
+				//del struct
+				kfree(cpage);
+			}
+			hlist_del(&bucketnode->node);
+			kfree(bucketnode);
+		}
+
+		//unlock bucket
+		spin_unlock_irqrestore(&fpp->bucket_locks[i],flags);
 	}
-	if (pseudo_mm_hash->funcid > 0)
-		xa_erase(&pseudo_mm_hash_array, pseudo_mm_hash->funcid);
-	kmem_cache_free(pseudo_mm_hash_cachep, pseudo_mm_hash);
+
+	kfree(fpp->buckets);
+	kfree(fpp->bucket_locks);
+	kfree(fpp);
+
+	if (fpp->id > 0)
+		xa_erase(&page_pool_array, fpp->id);
 }
-
-
-void free_srcpages_hash_list(struct srcpage_hlist_node *hh)
-{
-    struct pages_in_list *spil, *tmp;
-
-    list_for_each_entry_safe(spil, tmp, &hh->pages_list, list) {
-        __free_page(spil->page);
-        list_del(&spil->list);
-        kfree(spil);             
-    }
-    hlist_del(&hh->hnode);
-    kfree(hh);
-}
-
-
 
 void put_pseudo_mm_with_id(int id)
 {
@@ -414,32 +478,24 @@ void put_pseudo_mm_with_id(int id)
 		put_pseudo_mm(pseudo_mm);
 }
 
-void put_pseudo_mm_hash_with_id(int id)
+void put_page_pool_with_id(int id)
 {
 	// struct pseudo_mm *pseudo_mm;
-	struct pseudo_mm_pagepool *pseudo_mm_hash;
+	struct func_page_pool *fpp;
 	pr_info("process %d put pseudo_mm id %d\n", current->pid, id);
 	// id == -1 is a specical case to delete all pseudo_mm
 	if (id == -1) {
 		unsigned long idx;
-		// xa_for_each(&pseudo_mm_array, idx, pseudo_mm) {
-		// 	if (pseudo_mm)
-		// 		put_pseudo_mm(pseudo_mm);
-		// }
-		xa_for_each(&pseudo_mm_hash_array, idx, pseudo_mm_hash) {
-			if (pseudo_mm_hash)
-				put_pseudo_mm_hash(pseudo_mm_hash);
+		xa_for_each(&page_pool_array, idx, fpp) {
+			if (fpp)
+				put_page_pool(fpp);
 		}
 		return;
 	}
 
-	// pseudo_mm = find_pseudo_mm(id);
-	pseudo_mm_hash = find_pseudo_mm_hash(id);
-
-	// if (pseudo_mm)
-	// 	put_pseudo_mm(pseudo_mm);
-	if (pseudo_mm_hash)
-		put_pseudo_mm(pseudo_mm_hash);
+	fpp = find_page_pool(id);
+	if (fpp)
+		put_page_pool(fpp);
 }
 
 unsigned long pseudo_mm_add_map(int id, unsigned long start, unsigned long size,

@@ -1,6 +1,8 @@
 #ifndef __LINUX_PSEUDO_MM__
 #define __LINUX_PSEUDO_MM__
 
+
+
 #include <linux/mm.h>
 #include <linux/mm_types.h>
 #include <linux/xarray.h>
@@ -8,6 +10,10 @@
 #include <linux/hashtable.h>
 
 // #define PSEUDO_MM_DEBUG
+enum copy_page_state {
+    COPY_PAGE_FREE,   // 空闲副本页
+    COPY_PAGE_IN_USE  // 已被分配给某个进程使用
+};
 
 typedef struct {
 	unsigned long val;
@@ -21,29 +27,62 @@ struct pseudo_mm {
 };
 
 // Pseudo_mm_pagepool for a specific physical page
-struct pseudo_mm_pagepool {
-    int funcid;               // unique ID
-    // struct hlist_node hlist;        // Hash list node for pseudo_mm_pagepool
-    struct hlist_head srcpages_hash_list[1024]; // hashlist of pagelist for each source page
-	// struct hlist_head srcpages_hash_list[1024]; item:srcpages_hash_list[i],hashlist_head
+// struct func_page_pool {
+//     int funcid;               // unique ID
+//     // struct hlist_node hlist;        // Hash list node for func_page_pool
+//     struct hlist_head srcpages_hash_head[1024]; // hashlist of pagelist for each source page
+// 	// struct hlist_head srcpages_hash_head[1024]; item:srcpages_hash_head[i],hashlist_head
+// };
+
+
+// struct func_page_pool {
+//     int id;               // unique ID
+//     struct rb_root special_pages; // hashlist of pagelist for each source page
+// 	atomic_t refcount; //manage pagepool lifestyle
+// };
+
+struct func_page_pool {
+	int id;
+	struct hlist_head *buckets;    // 哈希桶数组
+	spinlock_t *bucket_locks;      // 每个桶的自旋锁（降低锁粒度）
+    u32 hash_bits;                 // 哈希位数（桶数量 = 1 << hash_bits）
+    atomic_t refcount;             // 引用计数（用于生命周期管理）
 };
 
-//srcpage_hlist_node
-struct srcpage_hlist_node{
-	struct hlist_head hnode;	    //for hash insert
-	struct list_head pages_list;	//pagelist based on src page
-	struct page *head_page;			//src page
-	unsigned int list_nr_pages;  
-	unsigned long vaddr;   //page vaddr or hash index
+struct special_page_entry {
+    unsigned long vaddr;            // 虚拟地址
+	struct hlist_node node;			//hashtable list node
+    struct page *master_page;       // 快照时的原始数据页
+    struct list_head free_copies;   // 空闲副本页链表
+    struct list_head used_copies;   // used副本页链表
+    spinlock_t lock;                // 保护该结构的自旋锁
+	unsigned int prealloc_count;   // 预分配的空闲页数量
+    unsigned int max_prealloc;     // 最大预分配数量（用户配置）
 };
 
-struct pages_in_list{
-	struct list_head list;
-	struct page *page;
-	unsigned long vaddr;
-	int is_used;
-	int is_vaild;
+struct copy_page {
+    struct list_head list;          // 链表节点
+    struct page *page;              // 指向物理页的指针
+    enum copy_page_state state;// 状态标记
+    atomic_t refcount;         // 引用计数（可选，用于延迟释放）
 };
+
+// //srcpage_hlist_node
+// struct srcpage_hlist_node{
+// 	struct hlist_head hnode;	    //for hash insert
+// 	struct list_head pages_list;	//pagelist based on src page
+// 	struct page *head_page;			//src page
+// 	unsigned int list_nr_pages;  
+// 	unsigned long vaddr;   //page vaddr or hash index
+// };
+
+// struct pages_in_list{
+// 	struct list_head list;
+// 	struct page *page;
+// 	unsigned long vaddr;
+// 	int is_used;
+// 	int is_vaild;
+// };
 
 struct pseudo_mm_pin_pages {
 	struct list_head list;
@@ -102,16 +141,16 @@ int pseudo_mm_rdma_prefer_node(void);
  * return the id of that pseudo_mm, which can be used to find_pseudo_mm()
  */
 int create_pseudo_mm(void);
-int create_pseudo_mm_hash(void);
+int create_func_page_pool(void);
 struct pseudo_mm *find_pseudo_mm(int id);
-struct pseudo_mm_pagepool *find_pseudo_mm_hash(int id);
+struct func_page_pool *find_page_pool(int id);
 /*
  * put_pseudo_mm_with_id() - delete the pseudo_mm corresponding to id
  * @id: the id of the pseudo_mm that needed to be deleted, -1 to delete
  * all pseudo_mm
  */
 void put_pseudo_mm_with_id(int id);
-void put_pseudo_mm_hash_with_id(int id);
+void put_page_pool_with_id(int id);
 
 /*
  * Add a memory mapping to this pseudo_mm.
