@@ -45,8 +45,6 @@ u32 get_page_index(struct func_page_pool* fpp, unsigned long vaddr){
  */
  //hash pool
 static unsigned long __setup_pool_for_func_vma(int id,
-						// struct pseudo_mm *pseudo_mm,
-					    // struct vm_area_struct *vma,
 					    unsigned long start,
 					    unsigned long nr_pages,
 					    pgoff_t pgoff)
@@ -59,7 +57,7 @@ static unsigned long __setup_pool_for_func_vma(int id,
 	pfn_t pfn;
 	unsigned long ret = 0, i, vaddr;
 
-	pr_debug("__setup_pool_for_func_vma start!!!!!!!!!!!\n");
+	// pr_debug("__setup_pool_for_func_vma start!!!!!!!!!!!\n");
 
 
 	if (!backend->page) {
@@ -119,8 +117,8 @@ static unsigned long __setup_pool_for_func_vma(int id,
 				 copy_highpage(new_page, head_page);
 				 cpage->page=new_page;
 				 cpage->state = COPY_PAGE_FREE;
-				 pr_info("PagePool:New page paddr:%llx,New page vaddr:%llx",cpage->page,spe->vaddr);
-				 pr_info("PagePool:Old page paddr:%llx,Old page vaddr:%llx",spe->master_page,vaddr);
+				//  pr_info("PagePool:New page paddr:%llx,New page vaddr:%llx",cpage->page,spe->vaddr);
+				//  pr_info("PagePool:Old page paddr:%llx,Old page vaddr:%llx",spe->master_page,vaddr);
 				 list_add_tail(&cpage->list, &spe->free_copies);
 				 spe->prealloc_count++;
 			}
@@ -141,6 +139,117 @@ out:
 	return ret;
 err_free:
 	pr_info("__setup_pool_for_func_vma failed\n");
+	goto out;
+}
+
+
+pte_t *get_pte_from_vaddr(struct mm_struct *mm, unsigned long vaddr){
+	
+	pgd_t *pgd;
+    p4d_t *p4d;
+    pud_t *pud;
+    pmd_t *pmd;
+    pte_t *pte;
+
+	pgd = pgd_offset(mm, vaddr);
+	if (pgd_none(*pgd) || pgd_bad(*pgd))
+		return NULL;
+
+	p4d = p4d_offset(pgd, vaddr);
+	if (p4d_none(*p4d) || p4d_bad(*p4d))
+		return NULL;
+
+	pud = pud_offset(p4d, vaddr);
+	if (pud_none(*pud) || pud_bad(*pud))
+		return NULL;
+
+	pmd = pmd_offset(pud, vaddr);
+	if (pmd_none(*pmd) || pmd_bad(*pmd))
+		return NULL;
+
+	pte = pte_offset_map(pmd, vaddr);
+	if (!pte || pte_none(*pte)) {
+		pte_unmap(pte);
+		return NULL;
+	}
+
+	return pte;
+}
+
+
+unsigned long pseudo_mm_add_page(int id,
+					    unsigned long vaddr,
+					    unsigned long copy_nr_pages, int numa_node) {
+	struct func_page_pool *fpp;
+	struct pseudo_mm *pseudo_mm;
+	struct mm_struct *mm;
+	spinlock_t *ptl;
+	pte_t *pte;
+	struct page *head_page;
+	phys_addr_t phys;
+	pfn_t pfn;
+	unsigned long ret = 0;
+	unsigned int flags;
+	u32 index;
+
+	fpp = find_page_pool(id);
+	if(!fpp)
+		return -1;
+
+	pseudo_mm = find_pseudo_mm(id);
+	if (!pseudo_mm)
+		return -ENOENT;
+	
+	mm = pseudo_mm->mm;
+	mmap_read_lock_killable(mm); 
+	pte = get_pte_from_vaddr(mm, vaddr);
+	if (!pte) {
+		return -ENOMEM;
+	}
+	head_page = pte_page(*pte);
+	phys = page_to_pfn(head_page) << PAGE_SHIFT;
+
+	//initialize special_page_entry
+	struct special_page_entry *spe;
+	spe = kmalloc(sizeof(*spe), GFP_KERNEL);
+	if (!spe)
+		return ERR_PTR(-ENOMEM);
+	spe->vaddr = vaddr;
+	spe->master_page = head_page;
+	spe->max_prealloc = 100;	
+	INIT_LIST_HEAD(&spe->free_copies);
+	INIT_LIST_HEAD(&spe->used_copies);
+	spin_lock_init(&spe->lock);
+
+	for (int i = 0; i < copy_nr_pages; i++) {
+		struct copy_page *cpage = kmalloc(sizeof(*cpage), GFP_KERNEL);
+		if (!cpage){
+			ret = ERR_PTR(-ENOMEM);
+			goto err_free;
+		}
+		struct page *new_page = alloc_pages_node(numa_node, GFP_KERNEL, 0);
+		if (!new_page){
+			ret = ERR_PTR(-ENOMEM);
+			// free_srcpages_hash_list(spe);
+			goto err_free;
+		 }
+		 copy_highpage(new_page, head_page);
+		 cpage->page = new_page;
+		 cpage->state = COPY_PAGE_FREE;
+		 list_add_tail(&cpage->list, &spe->free_copies);
+		 spe->prealloc_count++;
+		 pr_info("[add page] vaddr: %lx, pfn: %lx, numa_node %d", vaddr, page_to_pfn(new_page), numa_node);
+	}
+
+	index = get_page_index(fpp,vaddr);
+	spin_lock_irqsave(&fpp->bucket_locks[index],flags);
+    hlist_add_head(&spe->node, &fpp->buckets[index]);
+	spin_unlock_irqrestore(&fpp->bucket_locks[index],flags);
+out:
+	mmap_read_unlock(mm);
+	return ret;
+err_free:
+	pr_info("pseudo_mm_add_page failed\n");
 	goto out;
 }
 
@@ -318,7 +427,7 @@ unsigned long pseudo_mm_setup_pt(int id, unsigned long start,
 	struct mm_struct *mm;
 	struct vm_area_struct *vma;
 	unsigned long end = start + size;
-	unsigned long ret,ret1;
+	unsigned long ret;
 
 	if (!pseudo_mm)
 		return -ENOENT;
@@ -351,7 +460,7 @@ unsigned long pseudo_mm_setup_pt(int id, unsigned long start,
 	case DAX_MEM:{
 		ret = __setup_pt_for_vma_dax(id,pseudo_mm, vma, start,
 					     size >> PAGE_SHIFT, pgoff);
-		ret1 = __setup_pool_for_func_vma(id,start,size >> PAGE_SHIFT,pgoff);
+		// ret1 = __setup_pool_for_func_vma(id,start,size >> PAGE_SHIFT,pgoff);
 		break;	
 	}
 	case RDMA_MEM:
@@ -363,8 +472,9 @@ unsigned long pseudo_mm_setup_pt(int id, unsigned long start,
 	}
 out:
 	mmap_read_unlock(mm);
-	return ret1;
+	return ret;
 }
+
 
 unsigned long pseudo_mm_bring_back(int id, unsigned long start,
 				   unsigned long size)
@@ -420,3 +530,80 @@ out:
 	mmap_read_unlock(mm);
 	return ret;
 }
+
+
+unsigned long pseudo_mm_update_page(pid_t pid, int id, unsigned long start,
+	unsigned long size){
+			struct pseudo_mm *pseudo_mm;
+	struct mm_struct *mm;
+	struct vm_area_struct *vma;
+	unsigned long vaddr, end = start + size;
+	unsigned long ret;
+	struct task_struct *tsk;
+
+	// start and size must be page aligned
+	if (!PAGE_ALIGNED(start) || !PAGE_ALIGNED(size) || size == 0)
+		return -EINVAL;
+	pseudo_mm = find_pseudo_mm(id);
+	if (!pseudo_mm)
+		return -ENOENT;
+	
+	rcu_read_lock();
+	tsk = find_task_by_vpid(pid);
+	if(!tsk){
+		pr_warn("cannot find task of pif %d\n", pid);
+		return -ESRCH;
+	}
+	rcu_read_unlock();
+
+	mm = get_task_mm(tsk);
+	if(!mm){
+		pr_warn("cannot get tsk mm of pid %d\n", pid);
+		return -1;
+	}
+
+	mmap_read_lock_killable(mm); // find_vma_intersection() need mmap lock
+	vma = find_vma_intersection(mm, start, end);
+	if (!range_in_vma(vma, start, end)) {
+		pr_warn("(%#lx - %#lx) is not within single vma\n", start, end);
+		ret = -EFAULT;
+		goto out;
+	}
+	// if (!vma_is_pseudo_mm_master(vma)) {
+	// 	pr_warn("vma (%#lx - %#lx) is not pseudo mm master\n",
+	// 		vma->vm_start, vma->vm_end);
+	// 	ret = -EINVAL;
+	// 	goto out;
+	// }
+	// TODO(huang-jl): I only support to bring back private anonymous vma for now.
+	// For shared anonymous area: it is really hard to implement a mm template (more info
+	// can be found at pseudo_mm branch and git commit message).
+	// For file-backed area: it is already backed by page-cache (or local memory) by default.
+	//
+	// In fact this is not a todo, I just do not want to implement for shared anonymous vma :(
+	if (!vma_is_anonymous(vma) || (vma->vm_flags & VM_SHARED)) {
+		pr_warn("try to bring back memory within vma (%#lx - %#lx), which is not anonymous private vma\n",
+			vma->vm_start, vma->vm_end);
+		ret = -EINVAL;
+		goto out;
+	}
+
+	// bring back pages one by one
+	for (vaddr = start; vaddr < end; vaddr += PAGE_SIZE) {
+		struct special_page_entry *entry = find_special_page(id, vaddr);
+		struct copy_page *copy_page = snapshot_alloc_copy(entry);
+		if (!copy_page){
+			pr_warn("No free page of vaddr:%lx, for pid:%d, with pseudo_mm_id:%d\n", vaddr, pid, id);
+			goto out;
+		}
+		ret = pseudo_mm_update_single_page(mm, vma, vaddr, copy_page->page);
+		if (ret) {
+			goto out;
+		}
+	}
+out:
+	mmap_read_unlock(mm);
+	return ret;
+}
+
+

@@ -164,6 +164,12 @@ unsigned long pseudo_mm_add_map(int id, unsigned long start, unsigned long size,
 				unsigned long prot, unsigned long flags, int fd,
 				pgoff_t pgoff);
 
+
+struct copy_page *snapshot_alloc_copy(struct special_page_entry *entry);
+
+struct special_page_entry *find_special_page(int id, unsigned long vaddr);
+
+
 /*
  * pseudo_mm_setup_pt() - setup page table of pseudo_mm's virtual address
  * @id: pseudo_mm id
@@ -197,6 +203,13 @@ unsigned long pseudo_mm_setup_pt(int id, unsigned long start,
  */
 unsigned long pseudo_mm_bring_back(int id, unsigned long start,
 				   unsigned long size);
+
+
+unsigned long pseudo_mm_update_page(pid_t pid, int id, unsigned long vaddr,
+				unsigned long size);
+ 
+unsigned long pseudo_mm_add_page(int id, unsigned long vaddr, unsigned long copy_nr_pages, int numa_node);
+
 
 /*
  * pseudo_mm_attach() - insert *all* memory mapping into an existing process's address space

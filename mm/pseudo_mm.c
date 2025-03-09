@@ -17,6 +17,8 @@
 #include <linux/init.h>
 #include <linux/namei.h>
 
+
+
 #define stringify__(x) #x
 #define stringify_(x) stringify__(x)
 #define warn_weird_vma_flag(vma, pseudo_mm, flag_name)                  \
@@ -336,8 +338,8 @@ int create_func_page_pool(void)
 	atomic_set(&fpp->refcount, 1);
 
 	for (int i = 0; i < hnum; i++) {
-		pr_info("Initializing bucket %d at address %llx\n", i, &fpp->buckets[i]);
-		pr_info("Initializing bucket_lock %d at address %llx\n", i, &fpp->bucket_locks[i]);
+		// pr_info("Initializing bucket %d at address %llx\n", i, &fpp->buckets[i]);
+		// pr_info("Initializing bucket_lock %d at address %llx\n", i, &fpp->bucket_locks[i]);
 		INIT_HLIST_HEAD(&fpp->buckets[i]);
 		spin_lock_init(&fpp->bucket_locks[i]);
 	}
@@ -502,7 +504,8 @@ void put_page_pool_with_id(int id)
 /* 查找特殊页条目 */
 struct special_page_entry *find_special_page(int id, unsigned long vaddr) {
 	struct func_page_pool *fpp = find_page_pool(id);
-    u32 hash = get_page_index(fpp, vaddr);
+	// get hash index
+    u32 hash = hash_long(vaddr>>PAGE_SHIFT,fpp->hash_bits);
     struct special_page_entry *entry;
 	struct hlist_node *tmp;
     unsigned long flags;
@@ -534,40 +537,42 @@ struct copy_page *snapshot_alloc_copy(struct special_page_entry *entry) {
         return copy;
     }
 
-    /* 无空闲页时分配新副本页 */
-    copy = kzalloc(sizeof(*copy), GFP_ATOMIC);
-    if (!copy) {
-        spin_unlock_irqrestore(&entry->lock, flags);
-        return NULL;
-    }
+	return NULL;
 
-    copy->phys_page = alloc_page(GFP_KERNEL); // 分配物理页
-    if (!copy->phys_page) {
-        kfree(copy);
-        spin_unlock_irqrestore(&entry->lock, flags);
-        return NULL;
-    }
+    // /* 无空闲页时分配新副本页 */
+    // copy = kzalloc(sizeof(*copy), GFP_ATOMIC);
+    // if (!copy) {
+    //     spin_unlock_irqrestore(&entry->lock, flags);
+    //     return NULL;
+    // }
 
-    /* 复制原始页内容 */
-    memcpy(page_address(copy->phys_page), page_address(entry->master_page), PAGE_SIZE);
+    // copy->page = alloc_page(GFP_KERNEL); // 分配物理页
+    // if (!copy->page) {
+    //     kfree(copy);
+    //     spin_unlock_irqrestore(&entry->lock, flags);
+    //     return NULL;
+    // }
 
-    /* 添加到已用链表 */
-    copy->state = COPY_PAGE_IN_USE;
-    INIT_LIST_HEAD(&copy->list);
-    list_add(&copy->list, &entry->used_copies);
-    spin_unlock_irqrestore(&entry->lock, flags);
+    // /* 复制原始页内容 */
+    // memcpy(page_address(copy->page), page_address(entry->master_page), PAGE_SIZE);
 
-    return copy;
+    // /* 添加到已用链表 */
+    // copy->state = COPY_PAGE_IN_USE;
+    // INIT_LIST_HEAD(&copy->list);
+    // list_add(&copy->list, &entry->used_copies);
+    // spin_unlock_irqrestore(&entry->lock, flags);
+
+    // return copy;
 }
 
 /* 释放副本页（由进程退出时触发） */
 void snapshot_free_copy(struct special_page_entry *entry, struct copy_page *copy) {
-    unsigned long flags;
+    // unsigned long flags;
 
-    spin_lock_irqsave(&entry->lock, flags);
-    list_move(&copy->list, &entry->free_copies);
-    copy->state = COPY_PAGE_FREE;
-    spin_unlock_irqrestore(&entry->lock, flags);
+    // spin_lock_irqsave(&entry->lock, flags);
+    // list_move(&copy->list, &entry->free_copies);
+    // copy->state = COPY_PAGE_FREE;
+    // spin_unlock_irqrestore(&entry->lock, flags);
 }
 
 unsigned long pseudo_mm_add_map(int id, unsigned long start, unsigned long size,
@@ -892,257 +897,13 @@ fail_with_retval:
 	vm_unacct_memory(charge);
 	goto loop_out;
 }
+//TODO
+// static unsigned long pseudo_mm_attach_remap(int id, struct pseudo_mm *pseudo_mm,
+// 					   struct task_struct *tsk,
+// 					   struct mm_struct *mm)
+// {
 
-static unsigned long pseudo_mm_attach_remap(int id, struct pseudo_mm *pseudo_mm,
-					   struct task_struct *tsk,
-					   struct mm_struct *mm)
-{
-	struct mm_struct *oldmm = pseudo_mm->mm;
-	struct func_page_pool *fpp=find_page_pool(id);
-	struct vm_area_struct *mpnt, *tmp;
-	int retval = 0;
-	unsigned long addr,ret;
-	unsigned long charge = 0, tmp_vm_flags;
-	LIST_HEAD(uf);
-	MA_STATE(old_mas, &oldmm->mm_mt, 0, 0);
-	MA_STATE(mas, &mm->mm_mt, 0, 0);
-
-
-	uprobe_start_dup_mmap();
-	if (mmap_write_lock_killable(oldmm)) {
-		retval = -EINTR;
-		goto fail_uprobe_end;
-	}
-	flush_cache_dup_mm(oldmm);
-	uprobe_dup_mmap(oldmm, mm);
-	/*
-	 * Not linked in yet - no deadlock potential:
-	 */
-	mmap_write_lock_nested(mm, SINGLE_DEPTH_NESTING);
-
-	// do not dup mm exe file
-
-	mm->total_vm += oldmm->total_vm;
-	mm->data_vm += oldmm->data_vm;
-	mm->exec_vm += oldmm->exec_vm;
-	mm->stack_vm += oldmm->stack_vm;
-
-	// do not do ksm_fork or khugepaged_fork
-
-	retval = mas_expected_entries(&mas, oldmm->map_count);
-	if (retval)
-		goto out;
-
-	mas_for_each(&old_mas, mpnt, ULONG_MAX)
-	{
-		struct file *file;
-
-		// This is roughly weird
-		if (mpnt->vm_flags & VM_DONTCOPY) {
-			warn_weird_vma_flag(mpnt, pseudo_mm, DONTCOPY);
-			vm_stat_account(mm, mpnt->vm_flags, -vma_pages(mpnt));
-			continue;
-		}
-		charge = 0;
-		/*
-		 * Don't duplicate many vmas if we've been oom-killed (for
-		 * example)
-		 */
-		if (fatal_signal_pending(tsk)) {
-			retval = -EINTR;
-			goto loop_out;
-		}
-		if (mpnt->vm_flags & VM_ACCOUNT) {
-			unsigned long len = vma_pages(mpnt);
-
-			if (security_vm_enough_memory_mm(oldmm, len)) /* sic */
-				goto fail_nomem;
-			charge = len;
-		}
-		tmp = vm_area_dup(mpnt);
-		if (!tmp)
-			goto fail_nomem;
-		retval = vma_dup_policy(mpnt, tmp);
-		if (retval)
-			goto fail_nomem_policy;
-		tmp->vm_mm = mm;
-		retval = dup_userfaultfd(tmp, &uf);
-		if (retval)
-			goto fail_nomem_anon_vma_fork;
-		if (tmp->vm_flags & VM_WIPEONFORK) {
-			/*
-			 * VM_WIPEONFORK gets a clean slate in the child.
-			 * Don't prepare anon_vma until fault since we don't
-			 * copy page for current vma.
-			 */
-			warn_weird_vma_flag(tmp, pseudo_mm, WIPEONFORK);
-			tmp->anon_vma = NULL;
-		} else if (anon_vma_fork(tmp, mpnt))
-			goto fail_nomem_anon_vma_fork;
-
-		tmp->vm_flags &= ~(VM_LOCKED | VM_LOCKONFAULT);
-		// newly created vma should not be master
-		tmp->pseudo_mm_flag &= ~PSEUDO_MM_VMA_MASTER;
-		// we try to setup a new zero shmem file in page_fault_handler
-		if (vma_is_pseudo_anon_shared(mpnt)) {
-			// tmp->pseudo_mm_flag |= id;
-			// setup a new sheme zero file when attach
-			// pr_info("pseudo_mm create new vma %p old vm_file's mapping = #%p",
-			// 	tmp, tmp->vm_file->f_mapping);
-			pr_warn("pseudo_mm create anon shared vma which is not well supported\n");
-			tmp->vm_file = NULL;
-			retval = shmem_zero_setup(tmp);
-			if (retval)
-				goto fail_with_retval;
-			file = tmp->vm_file;
-			BUG_ON(!file);
-
-			i_mmap_lock_write(file->f_mapping);
-			mapping_allow_writable(file->f_mapping);
-			flush_dcache_mmap_lock(file->f_mapping);
-			vma_interval_tree_insert(tmp, &file->f_mapping->i_mmap);
-			flush_dcache_mmap_unlock(file->f_mapping);
-			i_mmap_unlock_write(file->f_mapping);
-			mapping_unmap_writable(file->f_mapping);
-			/* TODO (huang-jl) is this needed ? */
-			// uprobe_mmap(tmp);
-			goto skip_normal_file;
-		}
-
-		// TODO (huang-jl) check file-related logic
-		file = tmp->vm_file;
-		if (file) {
-			struct address_space *mapping = file->f_mapping;
-
-			get_file(file);
-			i_mmap_lock_write(mapping);
-			if (tmp->vm_flags & VM_SHARED)
-				mapping_allow_writable(mapping);
-			flush_dcache_mmap_lock(mapping);
-			/* insert tmp into the share list, just after mpnt */
-			vma_interval_tree_insert_after(tmp, mpnt,
-						       &mapping->i_mmap);
-			flush_dcache_mmap_unlock(mapping);
-			i_mmap_unlock_write(mapping);
-		}
-
-skip_normal_file:
-		// TODO (huang-jl) how about file-backed mapping ?
-		// Want to make sure that all pages are copy-on-write,
-		// so simply mark it PRIVATE here and restore after copy_page_range().
-		// The pte will be write-protected.
-		if (vma_is_pseudo_anon_shared(mpnt)) {
-			WARN(tmp->vm_flags != mpnt->vm_flags,
-			     "tmp and mpnt flag corrupt: %lx vs %lx\n",
-			     tmp->vm_flags, mpnt->vm_flags);
-			tmp_vm_flags = tmp->vm_flags;
-			tmp->vm_flags &= ~VM_SHARED;
-			mpnt->vm_flags &= ~VM_SHARED;
-		}
-		/*
-		 * TODO (huang-jl) Copy/update hugetlb private vma information.
-		 */
-		if (is_vm_hugetlb_page(tmp)) {
-			warn_weird_vma_flag(tmp, pseudo_mm, HUGHTLB);
-			hugetlb_dup_vma_private(tmp);
-		}
-
-		/* Link the vma into the MT, and
-		 * make sure that there is **no overlapping**.
-		 */
-		mas_set_range(&mas, tmp->vm_start, tmp->vm_end - 1);
-		mas_insert(&mas, tmp);
-		if (mas_is_err(&mas)) {
-			retval = xa_err(mas.node);
-			goto fail_with_retval;
-		}
-
-		// mas.index = tmp->vm_start;
-		// mas.last = tmp->vm_end - 1;
-		// mas_store(&mas, tmp);
-		// if (mas_is_err(&mas))
-		// 	goto fail_nomem_mas_store;
-
-		mm->map_count++;
-
-		if (!(tmp->vm_flags & VM_WIPEONFORK))
-			retval = copy_page_range(tmp, mpnt);
-
-#ifdef PSEUDO_MM_DEBUG
-		// Debug: check for page table entry
-		if (vma_is_pseudo_anon_shared(tmp)) {
-			addr = tmp->vm_start;
-			while (addr < tmp->vm_end) {
-				pgd_t *pgd = pgd_offset(mm, addr);
-				WARN(pgd_none(*pgd), "va #%lx pgd is none",
-				     addr);
-				p4d_t *p4d = p4d_offset(pgd, addr);
-				WARN(p4d_none(*p4d), "va #%lx p4d is none",
-				     addr);
-				pud_t *pud = pud_offset(p4d, addr);
-				WARN(pud_none(*pud), "va #%lx pud is none",
-				     addr);
-				pmd_t *pmd = pmd_offset(pud, addr);
-				WARN(pmd_none(*pmd), "va #%lx pmd is none",
-				     addr);
-				pte_t *pte = pte_offset_kernel(pmd, addr);
-				WARN(pte_none(*pte), "va #%lx pte is none",
-				     addr);
-				WARN(pte_write(*pte), "va #%lx pte is writable",
-				     addr);
-				addr += PAGE_SIZE;
-			}
-		}
-#endif
-
-		if (vma_is_pseudo_anon_shared(mpnt)) {
-			tmp->vm_flags = tmp_vm_flags;
-			mpnt->vm_flags = tmp_vm_flags;
-		}
-
-		if (tmp->vm_ops && tmp->vm_ops->open)
-			tmp->vm_ops->open(tmp);
-
-		if (retval)
-			goto loop_out;
-	}
-	/* a new mm has just been created */
-	// retval = arch_dup_mmap(oldmm, mm);
-loop_out:
-	mas_destroy(&mas);
-out:
-	mmap_write_unlock(mm);
-	flush_tlb_mm(oldmm);
-	mmap_write_unlock(oldmm);
-	dup_userfaultfd_complete(&uf);
-fail_uprobe_end:
-	uprobe_end_dup_mmap();
-	ret=pseudo_mm_getpte_from_mm(mm);
-	if(ret){
-		pr_err("Can't open oldmm\n");
-		goto fail_getoldpte;
-	}
-	return retval;
-
-fail_getoldpte:
-	retval = -ENOMEM;
-	goto fail_uprobe_end;
-fail_nomem_anon_vma_fork:
-	mpol_put(vma_policy(tmp));
-fail_nomem_policy:
-	vm_area_free(tmp);
-fail_nomem:
-	retval = -ENOMEM;
-	vm_unacct_memory(charge);
-	goto loop_out;
-
-fail_with_retval:
-	unlink_anon_vmas(tmp);
-	mpol_put(vma_policy(tmp));
-	vm_area_free(tmp);
-	vm_unacct_memory(charge);
-	goto loop_out;
-}
+// }
 
 
 
@@ -1180,7 +941,7 @@ unsigned long pseudo_mm_attach(pid_t pid, int id)
 	// pseudo_mm_getpte_from_mm(tsk_mm);
 
 	err = pseudo_mm_attach_mmap(id, pseudo_mm, tsk, tsk_mm);
-	err = pseudo_mm_attach_remap(id, pseudo_mm, tsk, tsk_mm);
+	// err = pseudo_mm_attach_remap(id, pseudo_mm, tsk, tsk_mm);
 	if (err)
 		pr_warn("attach pseudo_mm (id = %d)'s mmap to pid %d failed!\n",
 			id, pid);

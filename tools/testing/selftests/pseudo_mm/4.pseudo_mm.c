@@ -1,3 +1,4 @@
+cat << EOF > 4.pseudo_mm.c
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/mman.h>
@@ -62,6 +63,33 @@ int getpte(int pseudo_mm_fd, unsigned long start, unsigned long size)
 
 	int ret = ioctl(pseudo_mm_fd, PSEUDO_MM_IOC_GETPTE, (void *)(&getpte_param));
 	return ret;
+}
+
+int add_page(int pseudo_mm_fd, int pseudo_mm_id, unsigned long start, unsigned long size,
+    unsigned long nr_pages, int numa_node){
+    
+    struct pseudo_mm_add_page_param  param = {
+        .id = pseudo_mm_id,
+        .vaddr = start,
+        .size = size,
+        .copy_nr_pages = nr_pages,
+        .numa_node = numa_node
+    };
+    
+    int ret = ioctl(pseudo_mm_fd, PSEUDO_MM_IOC_ADD_PAGE_TO_POOL, (void *)(&param));
+    return ret;
+}
+
+int update_page(int pseudo_mm_fd, int pseudo_mm_id, int pid, unsigned long start, unsigned long size){
+    struct pseudo_mm_update_page_param param = {
+        .pid = pid,
+        .id = pseudo_mm_id,
+        .vaddr = start,
+        .size = size
+    };
+
+    int ret = ioctl(pseudo_mm_fd, PSEUDO_MM_IOC_UPDATE_PAGE, (void *)(&param));
+    return ret;
 }
 
 void hexdump(const void *data, long size) {
@@ -136,6 +164,12 @@ int main() {
         return -1;
     }
 
+    ret = add_page(pseudo_mm_fd, pseudo_mm_id, start, PAGE_SIZE, 2, 0);
+    if(ret){
+        perror("add page failed");
+        return -1;
+    }
+
     // step 4: attach
     ret = attach_to(pseudo_mm_fd, pseudo_mm_id);
     if(ret){
@@ -143,14 +177,20 @@ int main() {
         return -1;
     }
 
-    // step 5: getpte
-    ret = getpte(pseudo_mm_fd, start, PAGE_SIZE);
+    ret = update_page(pseudo_mm_fd, pseudo_mm_id, pid, start, PAGE_SIZE);
     if(ret){
-        perror("get pte failed");
+        perror("update page failed");
         return -1;
     }
 
-    hexdump(start, PAGE_SIZE);
+    // step 5: getpte
+    // ret = getpte(pseudo_mm_fd, start, PAGE_SIZE);
+    // if(ret){
+    //     perror("get pte failed");
+    //     return -1;
+    // }
+
+    hexdump(start, 0x20);
     
     // step 5: delete
     ioctl(pseudo_mm_fd, PSEUDO_MM_IOC_DELETE, (void *)(&pseudo_mm_id));

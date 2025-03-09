@@ -1,3 +1,4 @@
+// cat << EOF > pseudo_mm_ioctl.h
 #ifndef __PSEUDO_MM_IOCTL_H__
 #define __PSEUDO_MM_IOCTL_H__
 
@@ -80,6 +81,21 @@ struct pseudo_mm_pf_stat_param {
 	int rdma_read_nr;
 };
 
+struct pseudo_mm_update_page_param {
+	pid_t pid;
+	int id; //pseudo_mm
+	unsigned long vaddr;
+	unsigned long size;
+};
+
+struct pseudo_mm_add_page_param {
+	int id; //pseudo_mm
+	unsigned long vaddr;
+	unsigned long size;
+	unsigned long copy_nr_pages;
+	int numa_node;
+};
+
 /* argument is a fd used to identify the backend dax device */
 #define PSEUDO_MM_IOC_REGISTER _IOW(PSEUDO_MM_IOC_MAGIC, 0x00, int *)
 /* argument is used to RECV pseudo_mm_id */
@@ -100,5 +116,9 @@ struct pseudo_mm_pf_stat_param {
 	_IOWR(PSEUDO_MM_IOC_MAGIC, 0x08, struct pseudo_mm_phy_addr_param *)
 #define PSEUDO_MM_IOC_GETPTE \
 	_IOWR(PSEUDO_MM_IOC_MAGIC, 0x09, int *)
+#define PSEUDO_MM_IOC_UPDATE_PAGE \
+	_IOWR(PSEUDO_MM_IOC_MAGIC, 0x0a, int *)
+#define PSEUDO_MM_IOC_ADD_PAGE_TO_POOL \
+	_IOWR(PSEUDO_MM_IOC_MAGIC, 0x0b, int *)
 
 #endif

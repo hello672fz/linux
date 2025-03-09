@@ -3695,6 +3695,104 @@ unlock:
 	return ret;
 }
 
+
+unsigned long pseudo_mm_update_single_page(
+	struct mm_struct *mm, struct vm_area_struct *vma, unsigned long vaddr, struct page *new_page)
+{
+	unsigned long ret = 0;
+	pte_t *pte, entry;
+	spinlock_t *ptl;
+	struct page *old_page = NULL;
+	struct mmu_notifier_range range;
+
+	// double check
+	// if (!vma_is_pseudo_mm_master(vma)) {
+	// 	return -EINVAL;
+	// }
+
+	pte = get_locked_pte(mm, vaddr, &ptl);
+	if (!pte) {
+		return -ENOMEM;
+	}
+	if (pte_none(*pte) || !pte_devmap(*pte)) {
+		pr_warn("pseudo_mm try to bring back page start at %#lx, "
+					"which has not been setup_pt before!\n",
+			vaddr);
+		ret = -EINVAL;
+		goto unlock;
+	}
+	old_page = pte_page(*pte);
+	// get_page(old_page);
+
+	// start to copy
+	if (unlikely(anon_vma_prepare(vma))) {
+		ret = -ENOMEM;
+		goto oom;
+	}
+	// new_page = alloc_page_vma(GFP_HIGHUSER_MOVABLE, vma, vaddr);
+	if (!new_page)
+		goto oom;
+	// copy_user_highpage(new_page, old_page, vaddr, vma);
+
+
+	// TODO(huang-jl) do we really need mem cgroup charge for pseudo_mm ?
+	if (mem_cgroup_charge(page_folio(new_page), mm, GFP_KERNEL))
+		goto oom_free_new;
+	cgroup_throttle_swaprate(new_page, GFP_KERNEL);
+
+	__SetPageUptodate(new_page);
+
+	mmu_notifier_range_init(&range, MMU_NOTIFY_CLEAR, 0, vma, mm,
+				vaddr & PAGE_MASK,
+				(vaddr & PAGE_MASK) + PAGE_SIZE);
+	mmu_notifier_invalidate_range_start(&range);
+	inc_mm_counter_fast(mm, MM_ANONPAGES);
+	flush_cache_page(vma, vaddr, pte_pfn(*pte));
+	entry = mk_pte(new_page, vma->vm_page_prot);
+	entry = pte_sw_mkyoung(entry);
+	entry = maybe_mkwrite(pte_mkdirty(entry), vma);
+	ptep_clear_flush_notify(vma, vaddr, pte);
+	page_add_new_anon_rmap(new_page, vma, vaddr);
+	lru_cache_add_inactive_or_unevictable(new_page, vma);
+	/*
+	 * We call the notify macro here because, when using secondary
+	 * mmu page tables (such as kvm shadow page tables), we want the
+	 * new page to be mapped directly into the secondary page table.
+	 */
+	set_pte_at_notify(mm, vaddr, pte, entry);
+	update_mmu_cache(vma, vaddr, pte);
+
+	pr_info("[Update Page]: vaddr: %lx, old_pfn: %lx, new_pfn: %lx", vaddr, 
+		page_to_pfn(old_page), page_to_pfn(new_page));
+
+	/*
+	 * Free the old page..
+	 * Note by huang-jl: we do not put old page twice as wp_page_copy().
+	 * Since the old page is pinned by setup_pt, so we defer the put page
+	 * of old page until delete/put pseudo_mm.
+	 *
+	 * Once again: this is for simplicity not for performance or efficiency.
+	 */
+	// TODO: ?
+	// put_page(old_page);
+	pte_unmap_unlock(pte, ptl);
+	/*
+	 * No need to double call mmu_notifier->invalidate_range() callback as
+	 * the above ptep_clear_flush_notify() did already call it.
+	 */
+	mmu_notifier_invalidate_range_only_end(&range);
+	return ret;
+
+oom_free_new:
+	put_page(new_page);
+oom:
+	// if (old_page)
+		// put_page(old_page);
+unlock:
+	pte_unmap_unlock(pte, ptl);
+	return ret;
+}
+
 static void unmap_mapping_range_vma(struct vm_area_struct *vma,
 		unsigned long start_addr, unsigned long end_addr,
 		struct zap_details *details)

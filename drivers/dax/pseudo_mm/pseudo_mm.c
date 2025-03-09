@@ -98,14 +98,9 @@ static inline long _pseudo_mm_setup_pt(void *__user args)
 static inline long _pseudo_mm_getpte(pid_t pid)
 {
 	struct pseudo_mm_getpte_param param;
-	param.pid=pid;
 	unsigned long err;
-	// err = copy_from_user(&param, args, sizeof(param));
-	// if (err)
-	// 	return err;
 	
-//  err = pseudo_mm_setup_pt(param.id, param.start, param.size, param.pgoff,
-// 			 param.type);
+	param.pid = pid;
 	err = pseudo_mm_getpte(param.pid);
 	return err;
 }
@@ -160,10 +155,32 @@ static inline long _register_backend_memory(void *__user args)
 	return register_backend_memory(param.node, param.order);
 }
 
+static inline long _update_page(void *__user args){
+	struct pseudo_mm_update_page_param param;
+	unsigned long err;
+	err = copy_from_user(&param, args, sizeof(param));
+	if (err)
+		return err;
+
+	return pseudo_mm_update_page(param.pid, param.id, param.vaddr, param.size);
+}
+
+static inline long _add_page(void *__user args){
+	struct pseudo_mm_add_page_param param;
+	unsigned long err;
+	err = copy_from_user(&param, args, sizeof(param));
+	if (err)
+		return err;
+	if (param.size != PAGE_SIZE)
+		return -1;
+	return pseudo_mm_add_page(param.id, param.vaddr, param.copy_nr_pages, param.numa_node);
+}
+
+
 static long pseudo_mm_unlocked_ioctl(struct file *filp, unsigned int cmd,
 				     unsigned long args)
 {
-	int pseudo_mm_id, page_pool_id, fd;
+	int pseudo_mm_id, page_pool_id;
 	long err = 0;
 	long phy_addr = 0;
 	pid_t pid;
@@ -238,6 +255,16 @@ static long pseudo_mm_unlocked_ioctl(struct file *filp, unsigned int cmd,
 		phy_addr = pseudo_mm_phy_addr();
 		err = copy_to_user((void *)args, &phy_addr,
 				   sizeof(phy_addr));
+		if (err)
+			return err;
+		break;
+	case PSEUDO_MM_IOC_UPDATE_PAGE:
+		err = _update_page((void *)args);
+		if (err)
+			return err;
+		break;
+	case PSEUDO_MM_IOC_ADD_PAGE_TO_POOL:
+		err = _add_page((void *)args);
 		if (err)
 			return err;
 		break;
