@@ -198,9 +198,11 @@ static long pseudo_mm_unlocked_ioctl(struct file *filp, unsigned int cmd,
 	case PSEUDO_MM_IOC_CREATE:
 		// create a new pseudo_mm and return the id of it
 		pseudo_mm_id = create_pseudo_mm();
-		page_pool_id = create_func_page_pool();
-		if (pseudo_mm_id < 0||page_pool_id!=pseudo_mm_id)
+		if (pseudo_mm_id < 0)
 			return pseudo_mm_id;
+		// page_pool_id = create_func_page_pool();
+		// if (pseudo_mm_id < 0||page_pool_id!=pseudo_mm_id)
+		// 	return pseudo_mm_id;
 		err = copy_to_user((void *)args, &pseudo_mm_id,
 				   sizeof(pseudo_mm_id));
 		if (err)
@@ -212,7 +214,7 @@ static long pseudo_mm_unlocked_ioctl(struct file *filp, unsigned int cmd,
 		if (err)
 			return err;
 		put_pseudo_mm_with_id(pseudo_mm_id);
-		put_page_pool_with_id(pseudo_mm_id);
+		// put_page_pool_with_id(pseudo_mm_id);
 		break;
 	case PSEUDO_MM_IOC_ADD_MAP:
 		err = _pseudo_mm_add_map((void *)args);

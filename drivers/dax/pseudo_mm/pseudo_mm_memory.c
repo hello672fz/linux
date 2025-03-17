@@ -89,9 +89,10 @@ static unsigned long __setup_pool_for_func_vma(int id,
 
 			//initialize special_page_entry
 			spe = kmalloc(sizeof(*spe), GFP_KERNEL);
-			if (!spe)
-				return ERR_PTR(-ENOMEM);
-
+			if (!spe) {
+				pr_err("Can not allocate memory for spe\n");
+				return -ENOMEM;
+			}
 			spe->vaddr = vaddr;
 			spe->master_page = head_page;
 			spe->max_prealloc = max_prealloc;
@@ -105,12 +106,14 @@ static unsigned long __setup_pool_for_func_vma(int id,
 			for (int i = 1; i < copy_nr_pages; i++) {
 				struct copy_page *cpage = kmalloc(sizeof(*cpage), GFP_KERNEL);
 				if (!cpage){
-					ret=ERR_PTR(-ENOMEM);
+					pr_err("Can not allocate memory for cpage\n");
+					ret= -ENOMEM;
 					goto err_free;
 				}
 				struct page *new_page = alloc_pages_node(numa_node, GFP_KERNEL, 0);
 				 if (!new_page){
-					ret=ERR_PTR(-ENOMEM);
+					pr_err("Can not allocate memory for new page\n");
+					ret= -ENOMEM;
 					// free_srcpages_hash_list(spe);
 					goto err_free;
 				 }
@@ -183,11 +186,11 @@ unsigned long pseudo_mm_add_page(int id,
 	struct func_page_pool *fpp;
 	struct pseudo_mm *pseudo_mm;
 	struct mm_struct *mm;
-	spinlock_t *ptl;
+	// spinlock_t *ptl;
 	pte_t *pte;
 	struct page *head_page;
 	phys_addr_t phys;
-	pfn_t pfn;
+	// pfn_t pfn;
 	unsigned long ret = 0;
 	unsigned int flags;
 	u32 index;
@@ -213,7 +216,7 @@ unsigned long pseudo_mm_add_page(int id,
 	struct special_page_entry *spe;
 	spe = kmalloc(sizeof(*spe), GFP_KERNEL);
 	if (!spe)
-		return ERR_PTR(-ENOMEM);
+		return -ENOMEM;
 	spe->vaddr = vaddr;
 	spe->master_page = head_page;
 	spe->max_prealloc = 100;	
@@ -224,12 +227,12 @@ unsigned long pseudo_mm_add_page(int id,
 	for (int i = 0; i < copy_nr_pages; i++) {
 		struct copy_page *cpage = kmalloc(sizeof(*cpage), GFP_KERNEL);
 		if (!cpage){
-			ret = ERR_PTR(-ENOMEM);
+			ret = -ENOMEM;
 			goto err_free;
 		}
 		struct page *new_page = alloc_pages_node(numa_node, GFP_KERNEL, 0);
 		if (!new_page){
-			ret = ERR_PTR(-ENOMEM);
+			ret = -ENOMEM;
 			// free_srcpages_hash_list(spe);
 			goto err_free;
 		 }
@@ -238,7 +241,7 @@ unsigned long pseudo_mm_add_page(int id,
 		 cpage->state = COPY_PAGE_FREE;
 		 list_add_tail(&cpage->list, &spe->free_copies);
 		 spe->prealloc_count++;
-		 pr_info("[add page] vaddr: %lx, pfn: %lx, numa_node %d", vaddr, page_to_pfn(new_page), numa_node);
+		 pr_info("[Add Page] vaddr: %lx, old_pfn: %lx, new pfn: %lx, numa_node %d", vaddr, page_to_pfn(head_page), page_to_pfn(new_page), numa_node);
 	}
 
 	index = get_page_index(fpp,vaddr);
@@ -534,19 +537,21 @@ out:
 
 unsigned long pseudo_mm_update_page(pid_t pid, int id, unsigned long start,
 	unsigned long size){
-			struct pseudo_mm *pseudo_mm;
+
+	// struct pseudo_mm *pseudo_mm;
 	struct mm_struct *mm;
 	struct vm_area_struct *vma;
 	unsigned long vaddr, end = start + size;
 	unsigned long ret;
 	struct task_struct *tsk;
+	// atomic_t refcount;
 
 	// start and size must be page aligned
 	if (!PAGE_ALIGNED(start) || !PAGE_ALIGNED(size) || size == 0)
 		return -EINVAL;
-	pseudo_mm = find_pseudo_mm(id);
-	if (!pseudo_mm)
-		return -ENOENT;
+	// pseudo_mm = find_pseudo_mm(id);
+	// if (!pseudo_mm)
+	// 	return -ENOENT;
 	
 	rcu_read_lock();
 	tsk = find_task_by_vpid(pid);
@@ -556,6 +561,7 @@ unsigned long pseudo_mm_update_page(pid_t pid, int id, unsigned long start,
 	}
 	rcu_read_unlock();
 
+	//if the tsk start?after-attach-mm
 	mm = get_task_mm(tsk);
 	if(!mm){
 		pr_warn("cannot get tsk mm of pid %d\n", pid);
@@ -600,6 +606,7 @@ unsigned long pseudo_mm_update_page(pid_t pid, int id, unsigned long start,
 		if (ret) {
 			goto out;
 		}
+		// (copy_page->refcount).counter++;
 	}
 out:
 	mmap_read_unlock(mm);

@@ -19,6 +19,7 @@
 
 
 
+
 #define stringify__(x) #x
 #define stringify_(x) stringify__(x)
 #define warn_weird_vma_flag(vma, pseudo_mm, flag_name)                  \
@@ -251,7 +252,6 @@ int create_pseudo_mm(void)
 		goto drop_pseudo_mm;
 
 	pseudo_mm->id = id;
-	pr_debug("create_func_page_pool created:%d\n",pseudo_mm->id);
 
 	return id;
 
@@ -261,43 +261,6 @@ drop_mm:
 	mmdrop(mm);
 	return ret;
 }
-
-// rb_root
-//  int create_func_page_pool(void)
-//  {
-// 	 struct xa_limit limit;
-// 	 struct func_page_pool *fpp;
-// 	 int id, ret;
- 
-// 	fpp = kmalloc(sizeof(*fpp),GFP_KERNEL);
-	
-// 	 if (!fpp) {
-// 		 ret = -ENOMEM;
-// 		 goto drop_page_pool;
-// 	 }
-// 	 fpp->special_pages=RB_ROOT;
- 
-// 	 // insert newly created pseudo into xarray
-// 	 limit = XA_LIMIT(1, PSEUDO_MM_ID_MAX);
-// 	 ret = xa_alloc(&page_pool_array, &id, fpp, limit, GFP_KERNEL);
-// 	 // ret = xa_alloc(&pseudo_mm_array, &id, pseudo_mm, limit, GFP_KERNEL);
-// 	 // if (ret < 0)
-// 	 // 	goto drop_pseudo_mm;
-// 	 if (ret < 0)
-// 		 goto drop_page_pool;
- 
-// 	 fpp->id = id;
- 
-// 	 return id;
- 
-//  drop_page_pool:
-// 	 kmem_cache_free(page_pool_cachep, fpp);
-//  // drop_pseudo_mm:
-//  // 	kmem_cache_free(pseudo_mm_cachep, pseudo_mm);
-//  // drop_mm:
-//  // 	mmdrop(mm);
-// 	 return ret;
-//  }
 
 
 
@@ -314,7 +277,7 @@ int create_func_page_pool(void)
 		ret = -ENOMEM;
 		goto failed_page_pool;
 	}
-	pr_info("create_func_page_pool start!!!!!!!!!!!\n");
+	pr_info("[Create_func_page_pool] start\n");
 	//Initialize hashtable and lock
 	fpp->hash_bits=10;
 	int hnum=1<<(fpp->hash_bits);
@@ -408,6 +371,7 @@ static void put_pseudo_mm(struct pseudo_mm *pseudo_mm)
 		kvfree(pin_page->pages);
 		kfree(pin_page);
 	}
+	//new page refcount--(==1 now)
 	if (pseudo_mm->mm)
 		mmput(pseudo_mm->mm);
 	if (pseudo_mm->id > 0)
@@ -647,6 +611,7 @@ static unsigned long pseudo_mm_attach_mmap(int id, struct pseudo_mm *pseudo_mm,
 					   struct task_struct *tsk,
 					   struct mm_struct *mm)
 {
+	//mm-struct Metadata copy: mm copied oldmm via vm_area_dup()
 	struct mm_struct *oldmm = pseudo_mm->mm;
 	struct vm_area_struct *mpnt, *tmp;
 	int retval = 0;
@@ -656,7 +621,7 @@ static unsigned long pseudo_mm_attach_mmap(int id, struct pseudo_mm *pseudo_mm,
 	MA_STATE(old_mas, &oldmm->mm_mt, 0, 0);
 	MA_STATE(mas, &mm->mm_mt, 0, 0);
 
-	// pr_info("pseudo_mm_attach_mmap\n");
+	pr_info("pseudo_mm_attach_mmap\n");
 	// ret=pseudo_mm_getpte_from_oldmm(oldmm);
 	// if(ret){
 	// 	pr_err("Can't open oldmm\n");
@@ -916,7 +881,7 @@ unsigned long pseudo_mm_attach(pid_t pid, int id)
 	unsigned long err;
 
 	pseudo_mm = find_pseudo_mm(id);
-	struct mm_struct *mm=pseudo_mm->mm;
+	// struct mm_struct *mm=pseudo_mm->mm;
 	pr_info("Pseudo_mm attach with id %d\n", id);
 	if (!pseudo_mm) {
 		pr_warn("cannot find pseudo_mm with id %d\n", id);
@@ -1054,94 +1019,6 @@ unsigned long pseudo_template_getpte(struct mm_struct *mm, int id) {
     return 0;
 }
 
-// unsigned long pseudo_mm_getpte_from_oldmm(struct mm_struct *mm) {
-//     struct maple_tree *mt;
-//     struct vm_area_struct *vma;
-//     pgd_t *pgd;
-//     p4d_t *p4d;
-//     pud_t *pud;
-//     pmd_t *pmd;
-//     pte_t *pte;
-//     unsigned long len;
-//     struct file *file;
-//     loff_t pos = 0;
-//     char *log;
-//     int ret = 0;
-
-//     mt = &mm->mm_mt;
-//     MA_STATE(mas, mt, 0, 0);
-
-// 	pr_info("GGGGGGGGGGGGet pte old mm\n");
-
-//     file = filp_open("/tmp/pte_log_oldmm.txt", O_WRONLY | O_CREAT | O_TRUNC, 0644);
-//     if (IS_ERR(file)) {
-//         pr_warn("Failed to open file\n");
-//         return PTR_ERR(file); 
-//     }
-
-//     log = kmalloc(256, GFP_KERNEL);
-//     if (!log) {
-//         pr_warn("Failed to allocate log buffer\n");
-//         filp_close(file, NULL);
-//         return -ENOMEM;
-//     }
-
-//     if (!mmap_read_trylock(mm)) {
-//         pr_warn("Failed to acquire mmap read lock\n");
-//         ret = -EAGAIN;
-//         goto cleanup;
-//     }
-
-//     rcu_read_lock();
-// 	pr_info("GGet pte old mm\n");
-//     mas_for_each(&mas, vma, ULONG_MAX) {
-//         unsigned long vma_start = vma->vm_start;
-//         unsigned long vma_end = vma->vm_end;
-//         unsigned long vma_size = vma_end - vma_start;
-
-//         if (vma_size == 0) continue;
-
-//         len = snprintf(log, 256, "VMA: 0x%lx - 0x%lx\n", vma_start, vma_end);
-//         kernel_write(file, log, len, &pos);
-
-//         unsigned long vma_nr_pages = vma_size >> PAGE_SHIFT;
-//         for (unsigned long j = 0; j < vma_nr_pages; j++) {
-//             unsigned long current_vaddr = vma_start + (j << PAGE_SHIFT);
-
-//             pgd = pgd_offset(mm, current_vaddr);
-//             if (pgd_none(*pgd) || pgd_bad(*pgd)) continue;
-
-//             p4d = p4d_offset(pgd, current_vaddr);
-//             if (p4d_none(*p4d) || p4d_bad(*p4d)) continue;
-
-//             pud = pud_offset(p4d, current_vaddr);
-//             if (pud_none(*pud) || pud_bad(*pud)) continue;
-
-//             pmd = pmd_offset(pud, current_vaddr);
-//             if (pmd_none(*pmd) || pmd_bad(*pmd)) continue;
-
-//             pte = pte_offset_map(pmd, current_vaddr);
-//             if (!pte || pte_none(*pte)) {
-//                 pte_unmap(pte);
-//                 continue;
-//             }
-
-//             len = snprintf(log, 256, "Vaddr: 0x%lx, PFN: 0x%lx, Prot: 0x%lx\n",
-//                           current_vaddr, pte_pfn(*pte), pgprot_val(pte_pgprot(*pte)));
-//             kernel_write(file, log, len, &pos);
-//             pte_unmap(pte);
-//         }
-//     }
-//     rcu_read_unlock();
-
-//     mmap_read_unlock(mm);
-
-// cleanup:
-//     kfree(log);
-//     filp_close(file, NULL);
-//     return ret;
-// }
-
 
 unsigned long pseudo_mm_getpte_from_mm(struct mm_struct *mm) {
     // struct mm_struct *mm=inmm;
@@ -1231,14 +1108,12 @@ unsigned long pseudo_mm_getpte_from_mm(struct mm_struct *mm) {
 				pr_warn("Failed to write VMA info: %ld\n", ret);
 			}
             
-
             pte_unmap(pte);
         }
 	}
 	rcu_read_unlock();
 	vfs_fsync(file, 0);
 	print_file_path(file);
-	pr_info("VVVVVVVVVVVVVVVVV");
 
     kfree(log);
     filp_close(file, NULL);

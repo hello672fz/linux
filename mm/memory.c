@@ -3710,7 +3710,9 @@ unsigned long pseudo_mm_update_single_page(
 	// 	return -EINVAL;
 	// }
 
+	pr_info("pseudo_mm_update_single_page start!!!!");
 	pte = get_locked_pte(mm, vaddr, &ptl);
+	// pte=get_pte_from_vaddr(mm, vaddr);
 	if (!pte) {
 		return -ENOMEM;
 	}
@@ -3748,11 +3750,19 @@ unsigned long pseudo_mm_update_single_page(
 	mmu_notifier_invalidate_range_start(&range);
 	inc_mm_counter_fast(mm, MM_ANONPAGES);
 	flush_cache_page(vma, vaddr, pte_pfn(*pte));
+	//build new pte
 	entry = mk_pte(new_page, vma->vm_page_prot);
 	entry = pte_sw_mkyoung(entry);
+
+	//add write prot to pte
+	// entry = pte_mkwrite(entry);
 	entry = maybe_mkwrite(pte_mkdirty(entry), vma);
+
+
 	ptep_clear_flush_notify(vma, vaddr, pte);
 	page_add_new_anon_rmap(new_page, vma, vaddr);
+	//newpage-refcount.counter=2;
+	//insert page to LRU bc after allocation,add page-refcount.counter,while remove after kswapd or reclaim 
 	lru_cache_add_inactive_or_unevictable(new_page, vma);
 	/*
 	 * We call the notify macro here because, when using secondary
