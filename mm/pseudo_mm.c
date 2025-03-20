@@ -1070,11 +1070,10 @@ int mark_mm_pte_readonly(struct mm_struct *mm) {
 	struct vm_area_struct *vma;
 	spinlock_t *ptl;
 	
-    pgd_t *pgd;
-    p4d_t *p4d;
-    pud_t *pud;
-    pmd_t *pmd;
-    pte_t *pte;
+    pte_t *pte, entry;
+	pgprot_t prot;
+	unsigned long pfn;
+	struct page *page;
 
 	int retval = 0;
 	struct mmu_notifier_range range;
@@ -1100,18 +1099,32 @@ int mark_mm_pte_readonly(struct mm_struct *mm) {
 				pte_unmap_unlock(pte, ptl);
 				continue;
 			}
+			// write-protection
+			prot = pte_pgprot(*pte);
+			pfn = pte_pfn(*pte);
+			if(!pte_write(*pte)){
+				pte_unmap_unlock(pte, ptl);
+				continue;
+			}
+			page = pfn_to_page(pfn);
+			get_page(page); // increse _count
+			atomic_inc_and_test(&page->_mapcount); // increase _mapcount
+			ClearPageAnonExclusive(page);
+			pr_info("found a writable pte at vaddr: %lx, pfn: %lx\n", vaddr, pfn);
 			mmu_notifier_range_init(&range, MMU_NOTIFY_CLEAR, 0, vma, mm,
 				vaddr & PAGE_MASK,
 				(vaddr & PAGE_MASK) + PAGE_SIZE);
 			mmu_notifier_invalidate_range_start(&range);
-			flush_cache_page(vma, vaddr, pte_pfn(*pte));
-			pte_t entry = ptep_get_and_clear(mm, vaddr, pte);
+			inc_mm_counter(mm, MM_ANONPAGES);
+			flush_cache_page(vma, vaddr, pfn);
+			entry = ptep_clear_flush(vma, vaddr, pte);
 			entry = pte_wrprotect(entry);
-			ptep_clear_flush_notify(vma, vaddr, pte);
+			entry = pte_mkclean(entry);
+			// ptep_clear_flush_notify(vma, vaddr, pte);
 			set_pte_at_notify(mm, vaddr, pte, entry);
 			update_mmu_cache(vma, vaddr, pte);
 			pte_unmap_unlock(pte, ptl);
-			mmu_notifier_invalidate_range_only_end(&range);
+			mmu_notifier_invalidate_range_end(&range);
 		}
 	}
 	rcu_read_unlock();
@@ -1122,12 +1135,10 @@ int mark_mm_pte_readonly(struct mm_struct *mm) {
 
 unsigned long pseudo_mm_setpte(pid_t pid, unsigned long prot){
     struct task_struct *task;
-    struct mm_struct *mm;
-	char file_name[256];
-	
+    struct mm_struct *mm;	
 	unsigned long retval = 0;
 
-	pr_info("pseudo_mm_setpte");
+	pr_info("pseudo_mm_setpte: %d", pid);
 
     task = pid_task(find_vpid(pid), PIDTYPE_PID);
     if (!task) {
@@ -1141,7 +1152,9 @@ unsigned long pseudo_mm_setpte(pid_t pid, unsigned long prot){
         return -ENOENT;
     }
 
+	mmap_read_lock_killable(mm); 
 	mark_mm_pte_readonly(mm);
+	mmap_read_unlock(mm);
     // mmput(mm);
     return retval;	
 }

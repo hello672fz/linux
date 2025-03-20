@@ -3197,11 +3197,12 @@ static vm_fault_t wp_page_copy(struct vm_fault *vmf)
 	if (unlikely(anon_vma_prepare(vma)))
 		goto oom;
 
-	is_pseudo_mm_dax_fault = vma_is_pseudo_mm(vma) && pte_devmap(vmf->orig_pte);
-#ifdef PSEUDO_MM_DEBUG
+	// is_pseudo_mm_dax_fault = vma_is_pseudo_mm(vma) && pte_devmap(vmf->orig_pte);
+	is_pseudo_mm_dax_fault = vma_is_pseudo_mm(vma);
+// #ifdef PSEUDO_MM_DEBUG
 	if (is_pseudo_mm_dax_fault)
 		pseudo_mm_start = local_clock();
-#endif
+// #endif
 
 	if (is_zero_pfn(pte_pfn(vmf->orig_pte))) {
 		new_page = alloc_zeroed_user_highpage_movable(vma,
@@ -3345,12 +3346,13 @@ static vm_fault_t wp_page_copy(struct vm_fault *vmf)
 		put_page(old_page);
 	}
 
-#ifdef PSEUDO_MM_DEBUG
+// #ifdef PSEUDO_MM_DEBUG
 	if (is_pseudo_mm_dax_fault) {
 		pseudo_mm_end = local_clock();
-		trace_printk("wp_page_copy for pseudo_mm spent %lld ns\n", pseudo_mm_end - pseudo_mm_start);
+		// trace_printk("wp_page_copy for pseudo_mm spent %lld ns\n", pseudo_mm_end - pseudo_mm_start);
+		pr_info("pseudo_mm COW for page at VA %#lx, orig_pte: %#lx,wp_page_copy for pseudo_mm spent %lld ns\n", vmf->address, vmf->orig_pte.pte,pseudo_mm_end - pseudo_mm_start);
 	}
-#endif
+// #endif
 	delayacct_wpcopy_end();
 	return (page_copied && !unshare) ? VM_FAULT_WRITE : 0;
 oom_free_new:
@@ -3533,8 +3535,10 @@ static vm_fault_t do_wp_page(struct vm_fault *vmf)
 		 * If the page is exclusive to this process we must reuse the
 		 * page without further checks.
 		 */
-		if (PageAnonExclusive(vmf->page))
+		if (PageAnonExclusive(vmf->page)){
+			pr_info("pid: %d reuse page, vaddr: 0x%lx, pfn: 0x%lx\n", current->pid, vmf->address, page_to_pfn(vmf->page));
 			goto reuse;
+		}
 
 		/*
 		 * We have to verify under folio lock: these early checks are
