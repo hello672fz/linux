@@ -16,8 +16,7 @@
 #include <linux/shmem_fs.h>
 #include <linux/init.h>
 #include <linux/namei.h>
-
-
+#include <linux/mmu_notifier.h>
 
 
 #define stringify__(x) #x
@@ -857,14 +856,6 @@ fail_with_retval:
 	vm_unacct_memory(charge);
 	goto loop_out;
 }
-//TODO
-// static unsigned long pseudo_mm_attach_remap(int id, struct pseudo_mm *pseudo_mm,
-// 					   struct task_struct *tsk,
-// 					   struct mm_struct *mm)
-// {
-
-// }
-
 
 
 // TODO:add argvs [id,id2],for remapped attach
@@ -918,6 +909,38 @@ unsigned long pseudo_mm_attach(pid_t pid, int id)
 	return err ? err : 0;
 }
 
+
+void print_file_path(struct file *file) {
+    char *path_buf;
+    struct path file_path;
+    char *abs_path;
+
+    // 1. 分配缓冲区（PATH_MAX 通常为 4096）
+    path_buf = kmalloc(PATH_MAX, GFP_KERNEL);
+    if (!path_buf) {
+        pr_err("Failed to allocate path buffer\n");
+        return;
+    }
+
+    // 2. 获取文件的 path 结构（dentry + vfsmount）
+    file_path = file->f_path;
+    path_get(&file_path); // 增加引用计数
+
+    // 3. 生成绝对路径
+    abs_path = d_path(&file_path, path_buf, PATH_MAX);
+    if (IS_ERR(abs_path)) {
+        pr_err("Failed to get path: %ld\n", PTR_ERR(abs_path));
+        kfree(path_buf);
+        return;
+    }
+
+    // 4. 输出路径（如写入内核日志）
+    pr_info("File path: %s\n", abs_path);
+
+    // 5. 释放资源
+    path_put(&file_path);
+    kfree(path_buf);
+}
 
 unsigned long pseudo_mm_getpte_from_mm(struct mm_struct *mm, const char* file_name){
 
@@ -1014,56 +1037,97 @@ unsigned long pseudo_mm_getpte_from_mm(struct mm_struct *mm, const char* file_na
 }
 
 
-void print_file_path(struct file *file) {
-    char *path_buf;
-    struct path file_path;
-    char *abs_path;
-
-    // 1. 分配缓冲区（PATH_MAX 通常为 4096）
-    path_buf = kmalloc(PATH_MAX, GFP_KERNEL);
-    if (!path_buf) {
-        pr_err("Failed to allocate path buffer\n");
-        return;
-    }
-
-    // 2. 获取文件的 path 结构（dentry + vfsmount）
-    file_path = file->f_path;
-    path_get(&file_path); // 增加引用计数
-
-    // 3. 生成绝对路径
-    abs_path = d_path(&file_path, path_buf, PATH_MAX);
-    if (IS_ERR(abs_path)) {
-        pr_err("Failed to get path: %ld\n", PTR_ERR(abs_path));
-        kfree(path_buf);
-        return;
-    }
-
-    // 4. 输出路径（如写入内核日志）
-    pr_info("File path: %s\n", abs_path);
-
-    // 5. 释放资源
-    path_put(&file_path);
-    kfree(path_buf);
-}
-
-
 unsigned long pseudo_mm_getpte(pid_t pid) {
     struct task_struct *task;
     struct mm_struct *mm;
+	char file_name[256];
+	
+	unsigned long retval = 0;
+
+	pr_info("pseudo_mm_getpte");
+
+    task = pid_task(find_vpid(pid), PIDTYPE_PID);
+    if (!task) {
+        pr_warn("cannot find task with pid %d\n", pid);
+        return -ENOENT;
+    }
+
+	snprintf(file_name, sizeof(file_name), "/tmp/pte_pid_%d.txt", pid);
+
+    mm = get_task_mm(task);
+    if (!mm) {
+        pr_warn("Failed to get mm_struct for PID %d\n", pid);
+        return -ENOENT;
+    }
+
+	retval = pseudo_mm_getpte_from_mm(mm, file_name);
+    // mmput(mm);
+    return retval;
+}
+
+int mark_mm_pte_readonly(struct mm_struct *mm) {
 	struct maple_tree *mt;
 	struct vm_area_struct *vma;
+	spinlock_t *ptl;
 	
     pgd_t *pgd;
     p4d_t *p4d;
     pud_t *pud;
     pmd_t *pmd;
     pte_t *pte;
-    // unsigned long vaddr, i, len;
-    unsigned long len;
-    struct file *file;
-    loff_t pos = 0;
-    char *log;
-	char filename[256];
+
+	int retval = 0;
+	struct mmu_notifier_range range;
+
+	mt=&mm->mm_mt;
+	MA_STATE(mas, mt, 0, 0);
+
+	rcu_read_lock();
+	mas_for_each(&mas, vma, ULONG_MAX) {
+        unsigned long vma_start = vma->vm_start;
+        unsigned long vma_end = vma->vm_end;
+        unsigned long vma_size = vma_end - vma_start;
+
+        if (vma_size <= 0)
+            continue;
+
+        unsigned long vma_nr_pages = vma_size >> PAGE_SHIFT;
+        unsigned long j;
+        for (j = 0; j < vma_nr_pages; j++) {
+            unsigned long vaddr = vma_start + (j << PAGE_SHIFT);
+			pte = get_locked_pte(mm, vaddr, &ptl);
+			if (!pte || pte_none(*pte)) {
+				pte_unmap_unlock(pte, ptl);
+				continue;
+			}
+			mmu_notifier_range_init(&range, MMU_NOTIFY_CLEAR, 0, vma, mm,
+				vaddr & PAGE_MASK,
+				(vaddr & PAGE_MASK) + PAGE_SIZE);
+			mmu_notifier_invalidate_range_start(&range);
+			flush_cache_page(vma, vaddr, pte_pfn(*pte));
+			pte_t entry = ptep_get_and_clear(mm, vaddr, pte);
+			entry = pte_wrprotect(entry);
+			ptep_clear_flush_notify(vma, vaddr, pte);
+			set_pte_at_notify(mm, vaddr, pte, entry);
+			update_mmu_cache(vma, vaddr, pte);
+			pte_unmap_unlock(pte, ptl);
+			mmu_notifier_invalidate_range_only_end(&range);
+		}
+	}
+	rcu_read_unlock();
+
+	return retval;
+}
+
+
+unsigned long pseudo_mm_setpte(pid_t pid, unsigned long prot){
+    struct task_struct *task;
+    struct mm_struct *mm;
+	char file_name[256];
+	
+	unsigned long retval = 0;
+
+	pr_info("pseudo_mm_setpte");
 
     task = pid_task(find_vpid(pid), PIDTYPE_PID);
     if (!task) {
@@ -1077,85 +1141,9 @@ unsigned long pseudo_mm_getpte(pid_t pid) {
         return -ENOENT;
     }
 
-	mt=&mm->mm_mt;
-	MA_STATE(mas, mt, 0, 0);
-
-	snprintf(filename, sizeof(filename), "/tmp/pte_af_%d.txt", pid);
-
-    file = filp_open(filename, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (IS_ERR(file)) {
-        pr_warn("Failed to open file /tmp/pte_log.txt\n");
-        mmput(mm);
-        return -ENOENT;
-    }
-
-    log = kmalloc(256, GFP_KERNEL);
-    if (!log) {
-        pr_warn("Failed to allocate memory for log buffer\n");
-        filp_close(file, NULL);
-        mmput(mm);
-        return -ENOENT;
-    }
-
-	rcu_read_lock();
-	mas_for_each(&mas, vma, ULONG_MAX) {
-        unsigned long vma_start = vma->vm_start;
-        unsigned long vma_end = vma->vm_end;
-        unsigned long vma_size = vma_end - vma_start;
-
-        if (vma_size <= 0)
-            continue;
-
-        len = snprintf(log, 256, "VMA: 0x%lx - 0x%lx\n", vma_start, vma_end);
-        kernel_write(file, log, len, &pos);
-        // pr_info("VMA: 0x%lx - 0x%lx\n", vma_start, vma_end);
-
-        unsigned long vma_nr_pages = vma_size >> PAGE_SHIFT;
-        unsigned long j;
-        for (j = 0; j < vma_nr_pages; j++) {
-            unsigned long current_vaddr = vma_start + (j << PAGE_SHIFT);
-
-            pgd = pgd_offset(mm, current_vaddr);
-            if (pgd_none(*pgd) || pgd_bad(*pgd))
-                continue;
-
-            p4d = p4d_offset(pgd, current_vaddr);
-            if (p4d_none(*p4d) || p4d_bad(*p4d))
-                continue;
-
-            pud = pud_offset(p4d, current_vaddr);
-            if (pud_none(*pud) || pud_bad(*pud))
-                continue;
-
-            pmd = pmd_offset(pud, current_vaddr);
-            if (pmd_none(*pmd) || pmd_bad(*pmd))
-                continue;
-
-            pte = pte_offset_map(pmd, current_vaddr);
-            if (!pte || pte_none(*pte)) {
-                pte_unmap(pte);
-                continue;
-            }
-
-            unsigned long pfn = pte_pfn(*pte);
-            pgprot_t prot = pte_pgprot(*pte);
-
-            len = snprintf(log, 256, "Vaddr: 0x%lx, PFN: 0x%lx, Prot: 0x%lx\n",
-                          current_vaddr, pfn, pgprot_val(prot));
-            kernel_write(file, log, len, &pos);
-            // pr_info("Vaddr: 0x%lx, PFN: 0x%lx, Prot: 0x%lx\n",
-            //        current_vaddr, pfn, pgprot_val(prot));
-
-            pte_unmap(pte);
-        }
-	}
-	rcu_read_unlock();
-
-
-    kfree(log);
-    filp_close(file, NULL);
-    mmput(mm);
-    return 0;
+	mark_mm_pte_readonly(mm);
+    // mmput(mm);
+    return retval;	
 }
 
 

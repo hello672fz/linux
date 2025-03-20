@@ -218,6 +218,7 @@ unsigned long pseudo_mm_add_page(int id, unsigned long vaddr, unsigned long copy
  */
 unsigned long pseudo_mm_attach(pid_t pid, int id);
 unsigned long pseudo_mm_getpte(pid_t pid);
+unsigned long pseudo_mm_setpte(pid_t pid, unsigned long prot);
 unsigned long pseudo_mm_getpte_from_mm(struct mm_struct *mm, const char* file_name);
 unsigned long pseudo_mm_getpte_from_oldmm(struct mm_struct *mm);
 void print_file_path(struct file *file);

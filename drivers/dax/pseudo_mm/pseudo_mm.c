@@ -105,6 +105,16 @@ static inline long _pseudo_mm_getpte(pid_t pid)
 	return err;
 }
 
+static inline long _pseudo_mm_setpte(void *__user args){
+	struct pseudo_mm_setpte_param param;
+	unsigned long err;
+	err = copy_from_user(&param, args, sizeof(param));
+	if (err)
+		return err;
+
+	return pseudo_mm_setpte(param.pid, param.prot);
+}
+
 
 static inline long _pseudo_mm_bring_back(void *__user args)
 {
@@ -238,6 +248,11 @@ static long pseudo_mm_unlocked_ioctl(struct file *filp, unsigned int cmd,
 		if (err)
 			return err;
 		err=_pseudo_mm_getpte(pid);
+		if (err)
+			return err;
+		break;
+	case PSEUDO_MM_IOC_SETPTE:
+		err = _pseudo_mm_setpte((void *)args);
 		if (err)
 			return err;
 		break;

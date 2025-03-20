@@ -54,6 +54,11 @@ struct pseudo_mm_getpte_param {
 	// unsigned long size;
 };
 
+struct pseudo_mm_setpte_param {
+	pid_t pid;
+	unsigned long prot;
+};
+
 
 struct pseudo_mm_mempool_param {
 	pid_t pid;
@@ -120,5 +125,8 @@ struct pseudo_mm_add_page_param {
 	_IOWR(PSEUDO_MM_IOC_MAGIC, 0x0a, int *)
 #define PSEUDO_MM_IOC_ADD_PAGE_TO_POOL \
 	_IOWR(PSEUDO_MM_IOC_MAGIC, 0x0b, int *)
+#define PSEUDO_MM_IOC_SETPTE \
+	_IOWR(PSEUDO_MM_IOC_MAGIC, 0x0c, int *)
+
 
 #endif
