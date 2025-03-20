@@ -238,9 +238,7 @@ static long pseudo_mm_unlocked_ioctl(struct file *filp, unsigned int cmd,
 		if (err)
 			return err;
 		err=_pseudo_mm_getpte(pid);
-		// break;
-		// err = _pseudo_mm_getpte((void *)args);
-		// if (err)
+		if (err)
 			return err;
 		break;
 	case PSEUDO_MM_IOC_BRING_BACK:

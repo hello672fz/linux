@@ -836,11 +836,6 @@ out:
 	dup_userfaultfd_complete(&uf);
 fail_uprobe_end:
 	uprobe_end_dup_mmap();
-	ret=pseudo_mm_getpte_from_mm(mm);
-	if(ret){
-		pr_err("Can't open oldmm\n");
-		goto fail_getoldpte;
-	}
 	return retval;
 
 fail_getoldpte:
@@ -879,22 +874,32 @@ unsigned long pseudo_mm_attach(pid_t pid, int id)
 	struct mm_struct *tsk_mm;
 	struct pseudo_mm *pseudo_mm;
 	unsigned long err;
+	char file_name[256];
+	pid_t real_pid;
 
 	pseudo_mm = find_pseudo_mm(id);
-	// struct mm_struct *mm=pseudo_mm->mm;
-	pr_info("Pseudo_mm attach with id %d\n", id);
 	if (!pseudo_mm) {
 		pr_warn("cannot find pseudo_mm with id %d\n", id);
 		return -ENOENT;
 	}
 
+	snprintf(file_name, sizeof(file_name), "/tmp/pte_pseudo_mm_%d.txt", id);
+	err = pseudo_mm_getpte_from_mm(pseudo_mm->mm, file_name);
+	if(err){
+		pr_warn("pseudo_mm_%d getpte failed", id);
+	}
+
 	rcu_read_lock();
 	tsk = find_task_by_vpid(pid);
 	if (!tsk) {
+		rcu_read_unlock();
 		pr_warn("cannot find task of pid %d\n", pid);
 		return -ESRCH;
 	}
+	real_pid = tsk->pid;
 	rcu_read_unlock();
+
+	pr_info("Task pid is %d, Using pseudo_mm is %d\n", real_pid, id);
 
 	tsk_mm = get_task_mm(tsk);
 	if (!tsk_mm) {
@@ -902,11 +907,8 @@ unsigned long pseudo_mm_attach(pid_t pid, int id)
 		pr_warn("cannot get tsk mm of pid %d!\n", pid);
 		return 0;
 	}
-	// pseudo_mm_getpte_from_oldmm(pseudo_mm->mm);
-	// pseudo_mm_getpte_from_mm(tsk_mm);
 
 	err = pseudo_mm_attach_mmap(id, pseudo_mm, tsk, tsk_mm);
-	// err = pseudo_mm_attach_remap(id, pseudo_mm, tsk, tsk_mm);
 	if (err)
 		pr_warn("attach pseudo_mm (id = %d)'s mmap to pid %d failed!\n",
 			id, pid);
@@ -916,45 +918,38 @@ unsigned long pseudo_mm_attach(pid_t pid, int id)
 	return err ? err : 0;
 }
 
-unsigned long pseudo_template_getpte(struct mm_struct *mm, int id) {
+
+unsigned long pseudo_mm_getpte_from_mm(struct mm_struct *mm, const char* file_name){
 
 	struct maple_tree *mt;
 	struct vm_area_struct *vma;
-	unsigned long err;
 	
     pgd_t *pgd;
     p4d_t *p4d;
     pud_t *pud;
     pmd_t *pmd;
     pte_t *pte;
-    // unsigned long vaddr, i, len;
-    unsigned long len;
+
+	unsigned long len;
     struct file *file;
     loff_t pos = 0;
     char *log;
-	char filename[256];
 
-    if (!mm) {
-        pr_warn("cannot find pseudo_mm with id %d\n", id);
-        return -ENOENT;
-    }
+	int retval = 0;
 
 	mt=&mm->mm_mt;
 	MA_STATE(mas, mt, 0, 0);
-	snprintf(filename, sizeof(filename), "/tmp/pte_bf_%d.txt", id);
-
-    file = filp_open(filename, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+	
+    file = filp_open(file_name, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (IS_ERR(file)) {
-        pr_warn("Failed to open file /tmp/pte_log.txt\n");
-        mmput(mm);
-        return -ENOENT;
+        pr_warn("Failed to open file %s, error: %ld\n", file_name, PTR_ERR(file));
+        return PTR_ERR(file);
     }
 
     log = kmalloc(256, GFP_KERNEL);
     if (!log) {
         pr_warn("Failed to allocate memory for log buffer\n");
         filp_close(file, NULL);
-        mmput(mm);
         return -ENOENT;
     }
 
@@ -967,108 +962,8 @@ unsigned long pseudo_template_getpte(struct mm_struct *mm, int id) {
         if (vma_size <= 0)
             continue;
 
-        len = snprintf(log, 256, "VMA: 0x%lx - 0x%lx\n", vma_start, vma_end);
-        kernel_write(file, log, len, &pos);
-        pr_info("VMA: 0x%lx - 0x%lx\n", vma_start, vma_end);
-
-        unsigned long vma_nr_pages = vma_size >> PAGE_SHIFT;
-        unsigned long j;
-        for (j = 0; j < vma_nr_pages; j++) {
-            unsigned long current_vaddr = vma_start + (j << PAGE_SHIFT);
-
-            pgd = pgd_offset(mm, current_vaddr);
-            if (pgd_none(*pgd) || pgd_bad(*pgd))
-                continue;
-
-            p4d = p4d_offset(pgd, current_vaddr);
-            if (p4d_none(*p4d) || p4d_bad(*p4d))
-                continue;
-
-            pud = pud_offset(p4d, current_vaddr);
-            if (pud_none(*pud) || pud_bad(*pud))
-                continue;
-
-            pmd = pmd_offset(pud, current_vaddr);
-            if (pmd_none(*pmd) || pmd_bad(*pmd))
-                continue;
-
-            pte = pte_offset_map(pmd, current_vaddr);
-            if (!pte || pte_none(*pte)) {
-                pte_unmap(pte);
-                continue;
-            }
-
-            unsigned long pfn = pte_pfn(*pte);
-            pgprot_t prot = pte_pgprot(*pte);
-
-            len = snprintf(log, 256, "Vaddr: 0x%lx, PFN: 0x%lx, Prot: 0x%lx\n",
-                          current_vaddr, pfn, pgprot_val(prot));
-            kernel_write(file, log, len, &pos);
-            pr_info("Vaddr: 0x%lx, PFN: 0x%lx, Prot: 0x%lx\n",
-                   current_vaddr, pfn, pgprot_val(prot));
-
-            pte_unmap(pte);
-        }
-	}
-	rcu_read_unlock();
-
-
-    kfree(log);
-    filp_close(file, NULL);
-    mmput(mm);
-    return 0;
-}
-
-
-unsigned long pseudo_mm_getpte_from_mm(struct mm_struct *mm) {
-    // struct mm_struct *mm=inmm;
-	struct maple_tree *mt;
-	struct vm_area_struct *vma;
-	
-    pgd_t *pgd;
-    p4d_t *p4d;
-    pud_t *pud;
-    pmd_t *pmd;
-    pte_t *pte;
-    // unsigned long vaddr, i, len;
-    unsigned long len;
-    struct file *file;
-    loff_t pos = 0;
-    char *log;
-	ssize_t ret;
-
-	mt=&mm->mm_mt;
-	MA_STATE(mas, mt, 0, 0);
-
-    file = filp_open("/tmp/pte_log_bf_mm.txt", O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (IS_ERR(file)) {
-        pr_warn("Failed to open file /tmp/pte_log_bf_mm.txt\n");
-        // mmput(mm);
-        return -ENOENT;
-    }
-
-    log = kmalloc(256, GFP_KERNEL);
-    if (!log) {
-        pr_warn("Failed to allocate memory for log buffer\n");
-        filp_close(file, NULL);
-        // mmput(mm);
-        return -ENOENT;
-    }
-
-	rcu_read_lock();
-	mas_for_each(&mas, vma, ULONG_MAX) {
-        unsigned long vma_start = vma->vm_start;
-        unsigned long vma_end = vma->vm_end;
-        unsigned long vma_size = vma_end - vma_start;
-
-        if (vma_size <= 0)
-            continue;
-
-        len = snprintf(log, 256, "VMA: 0x%lx - 0x%lx\n", vma_start, vma_end);
-        ret=kernel_write(file, log, len, &pos);
-		if (ret != len) {
-            pr_warn("Failed to write VMA info: %ld\n", ret);
-        }
+        // len = snprintf(log, 256, "VMA: 0x%lx - 0x%lx\n", vma_start, vma_end);
+        // kernel_write(file, log, len, &pos);
         // pr_info("VMA: 0x%lx - 0x%lx\n", vma_start, vma_end);
 
         unsigned long vma_nr_pages = vma_size >> PAGE_SHIFT;
@@ -1103,22 +998,19 @@ unsigned long pseudo_mm_getpte_from_mm(struct mm_struct *mm) {
 
             len = snprintf(log, 256, "Vaddr: 0x%lx, PFN: 0x%lx, Prot: 0x%lx\n",
                           current_vaddr, pfn, pgprot_val(prot));
-            ret=kernel_write(file, log, len, &pos);
-			if (ret != len) {
-				pr_warn("Failed to write VMA info: %ld\n", ret);
-			}
-            
+            kernel_write(file, log, len, &pos);
+            // pr_info("Vaddr: 0x%lx, PFN: 0x%lx, Prot: 0x%lx\n",
+            //        current_vaddr, pfn, pgprot_val(prot));
+
             pte_unmap(pte);
         }
 	}
 	rcu_read_unlock();
-	vfs_fsync(file, 0);
-	print_file_path(file);
 
-    kfree(log);
-    filp_close(file, NULL);
-    // mmput(mm);
-    return 0;
+    retval = filp_close(file, NULL);
+	kfree(log);
+
+	return retval;
 }
 
 
@@ -1216,7 +1108,7 @@ unsigned long pseudo_mm_getpte(pid_t pid) {
 
         len = snprintf(log, 256, "VMA: 0x%lx - 0x%lx\n", vma_start, vma_end);
         kernel_write(file, log, len, &pos);
-        pr_info("VMA: 0x%lx - 0x%lx\n", vma_start, vma_end);
+        // pr_info("VMA: 0x%lx - 0x%lx\n", vma_start, vma_end);
 
         unsigned long vma_nr_pages = vma_size >> PAGE_SHIFT;
         unsigned long j;
@@ -1251,8 +1143,8 @@ unsigned long pseudo_mm_getpte(pid_t pid) {
             len = snprintf(log, 256, "Vaddr: 0x%lx, PFN: 0x%lx, Prot: 0x%lx\n",
                           current_vaddr, pfn, pgprot_val(prot));
             kernel_write(file, log, len, &pos);
-            pr_info("Vaddr: 0x%lx, PFN: 0x%lx, Prot: 0x%lx\n",
-                   current_vaddr, pfn, pgprot_val(prot));
+            // pr_info("Vaddr: 0x%lx, PFN: 0x%lx, Prot: 0x%lx\n",
+            //        current_vaddr, pfn, pgprot_val(prot));
 
             pte_unmap(pte);
         }
