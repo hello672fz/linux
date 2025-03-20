@@ -1069,7 +1069,7 @@ unsigned long pseudo_mm_getpte_from_mm(struct mm_struct *mm) {
 		if (ret != len) {
             pr_warn("Failed to write VMA info: %ld\n", ret);
         }
-        pr_info("VMA: 0x%lx - 0x%lx\n", vma_start, vma_end);
+        // pr_info("VMA: 0x%lx - 0x%lx\n", vma_start, vma_end);
 
         unsigned long vma_nr_pages = vma_size >> PAGE_SHIFT;
         unsigned long j;

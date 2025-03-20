@@ -1,7 +1,7 @@
 #!/bin/bash
 
 ## start qemu
-sudo /opt/qemu-2024-06-21/bin/qemu-system-x86_64 \
+/opt/qemu-2024-06-21/bin/qemu-system-x86_64 \
 -m 32G \
 -device e1000,netdev=net0 \
 -netdev user,id=net0,hostfwd=tcp::8088-:22 \
