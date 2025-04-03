@@ -3189,7 +3189,7 @@ static vm_fault_t wp_page_copy(struct vm_fault *vmf)
 	pte_t entry;
 	int page_copied = 0;
 	struct mmu_notifier_range range;
-	u64 pseudo_mm_start = 0, pseudo_mm_end;
+	// u64 pseudo_mm_start = 0, pseudo_mm_end;
 	int is_pseudo_mm_dax_fault = 0;
 
 	delayacct_wpcopy_start();
@@ -3701,107 +3701,77 @@ unlock:
 
 
 unsigned long pseudo_mm_update_single_page(
-	struct mm_struct *mm, struct vm_area_struct *vma, unsigned long vaddr, struct page *new_page)
-{
-	unsigned long ret = 0;
+	struct vm_area_struct *vma, unsigned long vaddr, struct page *new_page)
+{	
 	pte_t *pte, entry;
 	spinlock_t *ptl;
 	struct page *old_page = NULL;
 	struct mmu_notifier_range range;
+	unsigned long ret = 0;
+	struct mm_struct *mm;
+	unsigned long new_pfn, old_pfn;
 
-	// double check
-	// if (!vma_is_pseudo_mm_master(vma)) {
-	// 	return -EINVAL;
-	// }
+	if(!vma || !(mm = vma->vm_mm) || !new_page){
+		return -EINVAL;
+	}
 
-	pr_info("pseudo_mm_update_single_page start!!!!");
 	pte = get_locked_pte(mm, vaddr, &ptl);
-	// pte=get_pte_from_vaddr(mm, vaddr);
 	if (!pte) {
 		return -ENOMEM;
 	}
-	if (pte_none(*pte) || !pte_devmap(*pte)) {
-		pr_warn("pseudo_mm try to bring back page start at %#lx, "
-					"which has not been setup_pt before!\n",
-			vaddr);
-		ret = -EINVAL;
+
+	if(!pte_present(*pte)){
+		ret = -EFAULT;
 		goto unlock;
 	}
 	old_page = pte_page(*pte);
-	// get_page(old_page);
+	get_page(old_page);
 
-	// start to copy
+	old_pfn = page_to_pfn(old_page);
+	new_pfn = page_to_pfn(new_page);
+
 	if (unlikely(anon_vma_prepare(vma))) {
 		ret = -ENOMEM;
-		goto oom;
+		goto put_old;
 	}
-	// new_page = alloc_page_vma(GFP_HIGHUSER_MOVABLE, vma, vaddr);
-	if (!new_page)
-		goto oom;
-	// copy_user_highpage(new_page, old_page, vaddr, vma);
 
+	if (mem_cgroup_charge(page_folio(new_page), mm, GFP_KERNEL)){
+		ret = -ENOMEM;
+		goto put_old;
+	}
 
-	// TODO(huang-jl) do we really need mem cgroup charge for pseudo_mm ?
-	if (mem_cgroup_charge(page_folio(new_page), mm, GFP_KERNEL))
-		goto oom_free_new;
 	cgroup_throttle_swaprate(new_page, GFP_KERNEL);
-
 	__SetPageUptodate(new_page);
 
 	mmu_notifier_range_init(&range, MMU_NOTIFY_CLEAR, 0, vma, mm,
 				vaddr & PAGE_MASK,
 				(vaddr & PAGE_MASK) + PAGE_SIZE);
 	mmu_notifier_invalidate_range_start(&range);
+	
 	inc_mm_counter_fast(mm, MM_ANONPAGES);
+
 	flush_cache_page(vma, vaddr, pte_pfn(*pte));
-	//build new pte
 	entry = mk_pte(new_page, vma->vm_page_prot);
 	entry = pte_sw_mkyoung(entry);
-
-	//add write prot to pte
-	// entry = pte_mkwrite(entry);
-	entry = maybe_mkwrite(pte_mkdirty(entry), vma);
-
+	entry = pte_mkdirty(entry);
+	entry = maybe_mkwrite(entry, vma);
 
 	ptep_clear_flush_notify(vma, vaddr, pte);
 	page_add_new_anon_rmap(new_page, vma, vaddr);
-	//newpage-refcount.counter=2;
-	//insert page to LRU bc after allocation,add page-refcount.counter,while remove after kswapd or reclaim 
 	lru_cache_add_inactive_or_unevictable(new_page, vma);
-	/*
-	 * We call the notify macro here because, when using secondary
-	 * mmu page tables (such as kvm shadow page tables), we want the
-	 * new page to be mapped directly into the secondary page table.
-	 */
 	set_pte_at_notify(mm, vaddr, pte, entry);
 	update_mmu_cache(vma, vaddr, pte);
 
-	pr_info("[Update Page]: vaddr: %lx, old_pfn: %lx, new_pfn: %lx", vaddr, 
-		page_to_pfn(old_page), page_to_pfn(new_page));
-
-	/*
-	 * Free the old page..
-	 * Note by huang-jl: we do not put old page twice as wp_page_copy().
-	 * Since the old page is pinned by setup_pt, so we defer the put page
-	 * of old page until delete/put pseudo_mm.
-	 *
-	 * Once again: this is for simplicity not for performance or efficiency.
-	 */
-	// TODO: ?
-	// put_page(old_page);
+	put_page(old_page);
 	pte_unmap_unlock(pte, ptl);
-	/*
-	 * No need to double call mmu_notifier->invalidate_range() callback as
-	 * the above ptep_clear_flush_notify() did already call it.
-	 */
 	mmu_notifier_invalidate_range_only_end(&range);
+
+	pr_info("[Update Page]: vaddr: %lx, old_pfn: %lx, new_pfn: %lx", vaddr, old_pfn, new_pfn);
+
 	return ret;
 
-oom_free_new:
-	put_page(new_page);
-oom:
-	// if (old_page)
-		// put_page(old_page);
+put_old:
+	put_page(old_page);
 unlock:
 	pte_unmap_unlock(pte, ptl);
 	return ret;

@@ -166,7 +166,6 @@ err:
 unsigned long register_backend_memory(int node, int order)
 {	
 	struct page *page;
-	void *virt_addr;
 	u64 base_pfn, phys_addr;
 	u64 nr_pages;
 
@@ -182,7 +181,7 @@ unsigned long register_backend_memory(int node, int order)
 	nr_pages = 1UL << order;
 	page = alloc_contig_pages(nr_pages, GFP_KERNEL, node, NULL);
 	if (!page){
-		pr_err("alloc pages failed\n");
+		pr_warn("alloc pages failed\n");
 		return -1;	
 	}
 	backend.page = page;
@@ -225,6 +224,52 @@ inline bool pseudo_mm_rdma_pf_handler_enable(void)
  * Return its id (> 0) when SUCCESS, return errno otherwise
  */
 
+struct func_page_pool *create_func_page_pool(void)
+{
+	struct func_page_pool *fpp;
+	spinlock_t *bucket_locks;
+	struct hlist_head *buckets;
+	u64 hnum;
+
+	fpp = kmalloc(sizeof(*fpp), GFP_KERNEL);
+	if (!fpp) {
+		goto failed_fpp;
+	}
+
+	//Initialize hashtable and lock
+	fpp->hash_bits = 10;
+	hnum = 1UL << (fpp->hash_bits);
+	buckets = kmalloc_array(hnum, sizeof(struct hlist_head), GFP_KERNEL);
+	if(!buckets){
+		pr_warn("[func page pool]: alloc buckets failed");
+		goto failed_buckets;
+	}
+
+	bucket_locks = kmalloc_array(hnum, sizeof(spinlock_t), GFP_KERNEL);
+	if(!bucket_locks){
+		pr_warn("[func page pool]: alloc bucket_locks failed");
+		goto failed_bucket_locks;
+	}
+
+	fpp->buckets = buckets;
+	fpp->bucket_locks = bucket_locks;
+
+	for (int i = 0; i < hnum; i++) {
+		INIT_HLIST_HEAD(&fpp->buckets[i]);
+		spin_lock_init(&fpp->bucket_locks[i]);
+	}
+
+	return fpp;
+
+failed_bucket_locks:
+	kfree(buckets);	
+	// kfree(bucket_locks);
+failed_buckets:
+	kfree(fpp);
+failed_fpp:
+	return NULL;
+}
+
 int create_pseudo_mm(void)
 {
 	struct mm_struct *mm;
@@ -251,6 +296,12 @@ int create_pseudo_mm(void)
 		goto drop_pseudo_mm;
 
 	pseudo_mm->id = id;
+	pseudo_mm->fpp = create_func_page_pool();
+	if(!pseudo_mm->fpp){
+		pr_warn("[pseudo_mm %d]: create_func_page_pool failed", id);
+		ret = -ENOMEM;
+		goto drop_pseudo_mm;
+	}
 
 	return id;
 
@@ -258,70 +309,6 @@ drop_pseudo_mm:
 	kmem_cache_free(pseudo_mm_cachep, pseudo_mm);
 drop_mm:
 	mmdrop(mm);
-	return ret;
-}
-
-
-
-int create_func_page_pool(void)
-{
-	struct xa_limit limit;
-	struct func_page_pool *fpp;
-	spinlock_t *bucket_locks;
-	struct hlist_head *buckets;
-	int id, ret;
-
-	fpp=kmalloc(sizeof(*fpp),GFP_KERNEL);
-	if (!fpp) {
-		ret = -ENOMEM;
-		goto failed_page_pool;
-	}
-	pr_info("[Create_func_page_pool] start\n");
-	//Initialize hashtable and lock
-	fpp->hash_bits=10;
-	int hnum=1<<(fpp->hash_bits);
-	buckets = kmalloc_array(hnum,sizeof(struct hlist_head),GFP_KERNEL);
-	pr_info("Buckets address %llx\n", buckets);
-	if(!buckets){
-		ret = -ENOMEM;
-		goto drop_page_pool;
-	}
-
-	bucket_locks = kmalloc_array(hnum,sizeof(spinlock_t),GFP_KERNEL);
-	pr_info("Buckets locks address %llx\n", bucket_locks);
-	if(!bucket_locks){
-		ret = -ENOMEM;
-		goto drop_page_pool;
-	}
-
-	fpp->buckets=buckets;
-	fpp->bucket_locks=bucket_locks;
-	fpp->id = id;
-	atomic_set(&fpp->refcount, 1);
-
-	for (int i = 0; i < hnum; i++) {
-		// pr_info("Initializing bucket %d at address %llx\n", i, &fpp->buckets[i]);
-		// pr_info("Initializing bucket_lock %d at address %llx\n", i, &fpp->bucket_locks[i]);
-		INIT_HLIST_HEAD(&fpp->buckets[i]);
-		spin_lock_init(&fpp->bucket_locks[i]);
-	}
-
-	// insert newly created pagepool into xarray
-	limit = XA_LIMIT(1, PSEUDO_MM_ID_MAX);
-	ret = xa_alloc(&page_pool_array, &id, fpp, limit, GFP_KERNEL);
-	if (ret < 0)
-		goto drop_page_pool;
-
-	pr_info("create_func_page_pool created:%d\n",fpp->id);
-	return id;
-
-drop_page_pool:
-	kfree(fpp->buckets);
-	kfree(fpp->bucket_locks);
-	kfree(fpp);
-	return ret;
-
-failed_page_pool:
 	return ret;
 }
 
@@ -343,23 +330,64 @@ struct pseudo_mm *find_pseudo_mm(int id)
 	return pseudo_mm;
 }
 
-struct func_page_pool *find_page_pool(int id)
+static void put_page_pool(struct func_page_pool *fpp)
 {
-	struct func_page_pool *fpp = NULL;
-	unsigned long orig_id;
+	u64 bucket_num;
 
-	// invalid id
-	if (unlikely(id <= 0)) {
-		pr_warn("process %d find pseudo_mm with invalid id = %d\n",
-			current->pid, id);
-		return NULL;
+    if (!fpp || !fpp->buckets || !fpp->bucket_locks){
+        return;
+	}
+	
+	bucket_num = 1UL << (fpp->hash_bits);
+
+	for(int i = 0; i < bucket_num; i++){
+		struct special_page_entry *bucketnode;
+		struct hlist_node *tmp;
+		unsigned long flags;
+
+		// add lock before delete the bucket
+		spin_lock_irqsave(&fpp->bucket_locks[i], flags);
+
+		// struct,stroage of hlist_node, hlist_head, hnode name in struct 
+		hlist_for_each_entry_safe(bucketnode, tmp, &fpp->buckets[i], node){
+			struct copy_page *cpage,*tmpp;
+			list_for_each_entry_safe(cpage, tmpp, &bucketnode->free_copies, list) {
+				// release phy-page
+				__free_page(cpage->page);
+				// del node
+				list_del(&cpage->list);
+				// del struct
+				kfree(cpage);
+			}
+			list_for_each_entry_safe(cpage, tmpp, &bucketnode->used_copies, list) {
+				// release phy-page by process
+				// __free_page(cpage->page);
+				// del node
+				list_del(&cpage->list);
+				// del struct
+				kfree(cpage);
+			}
+			hlist_del(&bucketnode->node);
+			kfree(bucketnode);
+		}
+
+		//unlock bucket
+		spin_unlock_irqrestore(&fpp->bucket_locks[i], flags);
 	}
 
-	orig_id = id;
-	fpp = xa_find(&page_pool_array, &orig_id, orig_id, XA_PRESENT);
-	WARN_ON(fpp && fpp->id != id);
-	return fpp;
+	if(fpp->buckets){
+		kfree(fpp->buckets);
+		fpp->buckets = NULL;
+	}
+		
+	if(fpp->bucket_locks){
+		kfree(fpp->bucket_locks);
+		fpp->bucket_locks = NULL;
+	}
+		
+	kfree(fpp);
 }
+
 
 static void put_pseudo_mm(struct pseudo_mm *pseudo_mm)
 {
@@ -375,53 +403,9 @@ static void put_pseudo_mm(struct pseudo_mm *pseudo_mm)
 		mmput(pseudo_mm->mm);
 	if (pseudo_mm->id > 0)
 		xa_erase(&pseudo_mm_array, pseudo_mm->id);
+	if (pseudo_mm->fpp)
+		put_page_pool(pseudo_mm->fpp);
 	kmem_cache_free(pseudo_mm_cachep, pseudo_mm);
-}
-
-static void put_page_pool(struct func_page_pool *fpp)
-{
-	int bucket_num=1<<(fpp->hash_bits);
-	for(int i=0;i< bucket_num;i++){
-		struct special_page_entry *bucketnode;
-		struct hlist_node *tmp;
-		unsigned long flags;
-
-		//add lock before delete the bucket
-		spin_lock_irqsave(&fpp->bucket_locks[i],flags);
-
-		//struct,stroage of hlist_node, hlist_head, hnode name in struct 
-		hlist_for_each_entry_safe(bucketnode,tmp,&fpp->buckets[i],node){
-			struct copy_page *cpage,*tmpp;
-			list_for_each_entry_safe(cpage, tmpp, &bucketnode->free_copies,list) {
-				//release phy-page
-				__free_page(cpage->page);
-				//del node
-				list_del(&cpage->list);
-				//del struct
-				kfree(cpage);
-			}
-			list_for_each_entry_safe(cpage, tmpp, &bucketnode->used_copies,list) {
-				//release phy-page
-				__free_page(cpage->page);
-				//del node
-				list_del(&cpage->list);
-				//del struct
-				kfree(cpage);
-			}
-			hlist_del(&bucketnode->node);
-			kfree(bucketnode);
-		}
-
-		//unlock bucket
-		spin_unlock_irqrestore(&fpp->bucket_locks[i],flags);
-	}
-
-	kfree(fpp->buckets);
-	kfree(fpp->bucket_locks);
-	kfree(fpp);
-
-	if (fpp->id > 0)
-		xa_erase(&page_pool_array, fpp->id);
 }
 
 void put_pseudo_mm_with_id(int id)
@@ -443,35 +427,34 @@ void put_pseudo_mm_with_id(int id)
 		put_pseudo_mm(pseudo_mm);
 }
 
-void put_page_pool_with_id(int id)
-{
-	// struct pseudo_mm *pseudo_mm;
-	struct func_page_pool *fpp;
-	pr_info("process %d put pseudo_mm id %d\n", current->pid, id);
-	// id == -1 is a specical case to delete all pseudo_mm
-	if (id == -1) {
-		unsigned long idx;
-		xa_for_each(&page_pool_array, idx, fpp) {
-			if (fpp)
-				put_page_pool(fpp);
-		}
-		return;
-	}
-
-	fpp = find_page_pool(id);
-	if (fpp)
-		put_page_pool(fpp);
-}
-
-
 /* 查找特殊页条目 */
 struct special_page_entry *find_special_page(int id, unsigned long vaddr) {
-	struct func_page_pool *fpp = find_page_pool(id);
-	// get hash index
-    u32 hash = hash_long(vaddr>>PAGE_SHIFT,fpp->hash_bits);
-    struct special_page_entry *entry;
+	struct pseudo_mm *pseudo_mm;
+	struct func_page_pool *fpp;
+	struct special_page_entry *entry;
 	struct hlist_node *tmp;
     unsigned long flags;
+	u64 hash;
+
+	pseudo_mm = find_pseudo_mm(id);
+	if (!pseudo_mm) {
+		pr_warn("[find special page] cannot find pseudo_mm with id %d\n", id);
+		return NULL;
+	}
+
+	fpp = pseudo_mm->fpp;
+	if (!fpp) {
+		pr_warn("[find special page] pseudo_mm %d has NULL fpp\n", id);
+		return NULL;
+	}
+
+	if (!fpp->buckets || !fpp->bucket_locks) {
+        pr_warn("[find special page] fpp %p has NULL buckets/locks\n", fpp);
+        return NULL;
+    }
+
+	// get hash index
+    hash = hash_long(vaddr >> PAGE_SHIFT, fpp->hash_bits);
 
     spin_lock_irqsave(&fpp->bucket_locks[hash], flags);
     hlist_for_each_entry_safe(entry, tmp, &fpp->buckets[hash], node) {
@@ -484,14 +467,18 @@ struct special_page_entry *find_special_page(int id, unsigned long vaddr) {
     return NULL;
 }
 
-/* 分配一个副本页给进程 */
+// allocate a page copy
 struct copy_page *snapshot_alloc_copy(struct special_page_entry *entry) {
     struct copy_page *copy;
     unsigned long flags;
 
+	if(!entry){
+		pr_warn("snapshot_alloc_copy: entry is NULL\n");
+		return NULL;
+	}
+
     spin_lock_irqsave(&entry->lock, flags);
 
-    /* 优先从空闲链表获取副本页 */
     if (!list_empty(&entry->free_copies)) {
         copy = list_first_entry(&entry->free_copies, struct copy_page, list);
         list_move(&copy->list, &entry->used_copies);
@@ -500,43 +487,37 @@ struct copy_page *snapshot_alloc_copy(struct special_page_entry *entry) {
         return copy;
     }
 
+	pr_info("No free copies left for page [0x%lx]", entry->vaddr);
+	spin_unlock_irqrestore(&entry->lock, flags);
+
 	return NULL;
-
-    // /* 无空闲页时分配新副本页 */
-    // copy = kzalloc(sizeof(*copy), GFP_ATOMIC);
-    // if (!copy) {
-    //     spin_unlock_irqrestore(&entry->lock, flags);
-    //     return NULL;
-    // }
-
-    // copy->page = alloc_page(GFP_KERNEL); // 分配物理页
-    // if (!copy->page) {
-    //     kfree(copy);
-    //     spin_unlock_irqrestore(&entry->lock, flags);
-    //     return NULL;
-    // }
-
-    // /* 复制原始页内容 */
-    // memcpy(page_address(copy->page), page_address(entry->master_page), PAGE_SIZE);
-
-    // /* 添加到已用链表 */
-    // copy->state = COPY_PAGE_IN_USE;
-    // INIT_LIST_HEAD(&copy->list);
-    // list_add(&copy->list, &entry->used_copies);
-    // spin_unlock_irqrestore(&entry->lock, flags);
-
-    // return copy;
 }
 
-/* 释放副本页（由进程退出时触发） */
+/* Free copy pages (triggered on process exit) */
 void snapshot_free_copy(struct special_page_entry *entry, struct copy_page *copy) {
-    // unsigned long flags;
+    unsigned long flags;
 
-    // spin_lock_irqsave(&entry->lock, flags);
-    // list_move(&copy->list, &entry->free_copies);
-    // copy->state = COPY_PAGE_FREE;
-    // spin_unlock_irqrestore(&entry->lock, flags);
+	if (!entry || !copy) {
+		pr_warn("snapshot_free_copy: invalid NULL parameter\n");
+		return;
+	}
+
+    spin_lock_irqsave(&entry->lock, flags);
+
+	if (copy->state != COPY_PAGE_IN_USE) {
+        pr_warn("snapshot_free_copy: invalid state (%d)\n", copy->state);
+        spin_unlock_irqrestore(&entry->lock, flags);
+        return;
+    }
+
+    list_move(&copy->list, &entry->free_copies);
+    copy->state = COPY_PAGE_FREE;
+
+	pr_info("snapshot_free_copy: free copies for page [0x%lx]", entry->vaddr);
+    spin_unlock_irqrestore(&entry->lock, flags);
 }
+
+
 
 unsigned long pseudo_mm_add_map(int id, unsigned long start, unsigned long size,
 				unsigned long prot, unsigned long flags, int fd,
@@ -614,7 +595,6 @@ static unsigned long pseudo_mm_attach_mmap(int id, struct pseudo_mm *pseudo_mm,
 	struct mm_struct *oldmm = pseudo_mm->mm;
 	struct vm_area_struct *mpnt, *tmp;
 	int retval = 0;
-	unsigned long addr,ret;
 	unsigned long charge = 0, tmp_vm_flags;
 	LIST_HEAD(uf);
 	MA_STATE(old_mas, &oldmm->mm_mt, 0, 0);

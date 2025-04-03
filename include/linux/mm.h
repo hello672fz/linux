@@ -2965,7 +2965,7 @@ unsigned long pseudo_mm_bring_back_single_page(
 	struct mm_struct *mm, struct vm_area_struct *vma, unsigned long vaddr);
 
 unsigned long pseudo_mm_update_single_page(
-	struct mm_struct *mm, struct vm_area_struct *vma, unsigned long vaddr, struct page *new_page);
+	struct vm_area_struct *vma, unsigned long vaddr, struct page *new_page);
 
 static inline vm_fault_t vmf_insert_page(struct vm_area_struct *vma,
 				unsigned long addr, struct page *page)
