@@ -3198,10 +3198,10 @@ static vm_fault_t wp_page_copy(struct vm_fault *vmf)
 		goto oom;
 
 	// is_pseudo_mm_dax_fault = vma_is_pseudo_mm(vma) && pte_devmap(vmf->orig_pte);
-	is_pseudo_mm_dax_fault = vma_is_pseudo_mm(vma);
+// 	is_pseudo_mm_dax_fault = vma_is_pseudo_mm(vma);
 // #ifdef PSEUDO_MM_DEBUG
-	if (is_pseudo_mm_dax_fault)
-		pseudo_mm_start = local_clock();
+// 	if (is_pseudo_mm_dax_fault)
+// 		pseudo_mm_start = local_clock();
 // #endif
 
 	if (is_zero_pfn(pte_pfn(vmf->orig_pte))) {
@@ -3347,11 +3347,11 @@ static vm_fault_t wp_page_copy(struct vm_fault *vmf)
 	}
 
 // #ifdef PSEUDO_MM_DEBUG
-	if (is_pseudo_mm_dax_fault) {
-		pseudo_mm_end = local_clock();
-		// trace_printk("wp_page_copy for pseudo_mm spent %lld ns\n", pseudo_mm_end - pseudo_mm_start);
-		pr_info("pseudo_mm COW for page at VA %#lx, orig_pte: %#lx,wp_page_copy for pseudo_mm spent %lld ns\n", vmf->address, vmf->orig_pte.pte,pseudo_mm_end - pseudo_mm_start);
-	}
+// 	if (is_pseudo_mm_dax_fault) {
+// 		pseudo_mm_end = local_clock();
+// 		// trace_printk("wp_page_copy for pseudo_mm spent %lld ns\n", pseudo_mm_end - pseudo_mm_start);
+// 		pr_info("pseudo_mm COW for page at VA %#lx, orig_pte: %#lx,wp_page_copy for pseudo_mm spent %lld ns\n", vmf->address, vmf->orig_pte.pte,pseudo_mm_end - pseudo_mm_start);
+// 	}
 // #endif
 	delayacct_wpcopy_end();
 	return (page_copied && !unshare) ? VM_FAULT_WRITE : 0;

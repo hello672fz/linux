@@ -1110,7 +1110,7 @@ int mark_mm_pte_readonly(struct mm_struct *mm) {
 			get_page(page); // increse _count
 			atomic_inc_and_test(&page->_mapcount); // increase _mapcount
 			ClearPageAnonExclusive(page);
-			pr_info("found a writable pte at vaddr: %lx, pfn: %lx\n", vaddr, pfn);
+			// pr_info("found a writable pte at vaddr: %lx, pfn: %lx\n", vaddr, pfn);
 			mmu_notifier_range_init(&range, MMU_NOTIFY_CLEAR, 0, vma, mm,
 				vaddr & PAGE_MASK,
 				(vaddr & PAGE_MASK) + PAGE_SIZE);
