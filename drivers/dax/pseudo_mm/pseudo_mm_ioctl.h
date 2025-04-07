@@ -93,6 +93,11 @@ struct pseudo_mm_update_page_param {
 	unsigned long size;
 };
 
+struct pseudo_mm_update_all_param {
+	pid_t pid;
+	int id; //pseudo_mm
+};
+
 struct pseudo_mm_add_page_param {
 	int id; //pseudo_mm
 	unsigned long vaddr;
@@ -127,6 +132,7 @@ struct pseudo_mm_add_page_param {
 	_IOWR(PSEUDO_MM_IOC_MAGIC, 0x0b, int *)
 #define PSEUDO_MM_IOC_SETPTE \
 	_IOWR(PSEUDO_MM_IOC_MAGIC, 0x0c, int *)
-
+#define PSEUDO_MM_IOC_UPDATE_ALL \
+	_IOWR(PSEUDO_MM_IOC_MAGIC, 0x0d, int *)
 
 #endif

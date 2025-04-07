@@ -493,4 +493,83 @@ out:
 	return ret;
 }
 
+unsigned long pseudo_mm_update_all(pid_t pid, int id){
+	struct maple_tree *mt;
+	struct mm_struct *mm;
+	struct vm_area_struct *vma;
+	unsigned long vaddr, vma_start, vma_end, vma_size, vma_nr_pages;
+	unsigned long success_count = 0;
+	unsigned long ret = 0;
+	struct task_struct *tsk;
+	struct special_page_entry *entry;
+	struct copy_page *copy_page;
+	
+	rcu_read_lock();
+	tsk = find_task_by_vpid(pid);
+	if(!tsk){
+		rcu_read_unlock();
+		pr_warn("cannot find task of pif %d\n", pid);
+		return -ESRCH;
+	}
+	mm = get_task_mm(tsk);
+	rcu_read_unlock();
+
+	if(!mm){
+		pr_warn("cannot get tsk mm of pid %d\n", pid);
+		return -ESRCH;
+	}
+
+	if (mmap_read_lock_killable(mm)) {
+        mmput(mm);
+        return -EINTR;
+    }
+
+	mt=&mm->mm_mt;
+	MA_STATE(mas, mt, 0, 0);
+
+	rcu_read_lock();
+	mas_for_each(&mas, vma, ULONG_MAX) {
+        vma_start = vma->vm_start;
+        vma_end = vma->vm_end;
+        vma_size = vma_end - vma_start;
+
+		if (unlikely(vma_start == vma_end))
+			continue;
+
+        vma_nr_pages = vma_size >> PAGE_SHIFT;
+        for (unsigned long j = 0; j < vma_nr_pages; j++) {
+            vaddr = vma_start + (j << PAGE_SHIFT);
+			entry = find_special_page(id, vaddr);
+			if(!entry){
+				pr_warn("No special page of vaddr:%lx, for pid:%d, with pseudo_mm_id:%d\n", vaddr, pid, id);
+				continue;
+			}
+
+			copy_page = snapshot_alloc_copy(entry);
+			if (!copy_page){
+				pr_warn("No free page of vaddr:%lx, for pid:%d, with pseudo_mm_id:%d\n", vaddr, pid, id);
+				continue;
+			}
+
+			ret = pseudo_mm_update_single_page(vma, vaddr, copy_page->page);
+			if (ret) {
+				pr_warn("pseudo_mm_update_single_page failed\n");
+				continue;
+			}
+
+			success_count++;
+		}
+	}
+	rcu_read_unlock();
+
+	mmap_read_unlock(mm);
+	mmput(mm); // paired with get_task_mm
+
+	pr_info("Finished pseudo_mm_update_all(pid=%d, id=%d) - updated %lu pages\n", pid, id, success_count);
+
+	return ret;
+}
+
+
+
 

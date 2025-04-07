@@ -171,6 +171,8 @@ unsigned long pseudo_mm_bring_back(int id, unsigned long start,
 
 unsigned long pseudo_mm_update_page(pid_t pid, int id, unsigned long vaddr,
 				unsigned long size);
+
+unsigned long pseudo_mm_update_all(pid_t pid, int id);
  
 unsigned long pseudo_mm_add_page(int id, unsigned long vaddr, unsigned long copy_nr_pages, int numa_node);
 

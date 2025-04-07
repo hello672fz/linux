@@ -186,11 +186,20 @@ static inline long _add_page(void *__user args){
 	return pseudo_mm_add_page(param.id, param.vaddr, param.copy_nr_pages, param.numa_node);
 }
 
+static inline long _pseudo_mm_update_all(void *__user args){
+	struct pseudo_mm_update_all_param param;
+	unsigned long err;
+	err = copy_from_user(&param, args, sizeof(param));
+	if (err)
+		return err;
+	return pseudo_mm_update_all(param.pid, param.id);
+}
+
 
 static long pseudo_mm_unlocked_ioctl(struct file *filp, unsigned int cmd,
 				     unsigned long args)
 {
-	int pseudo_mm_id, page_pool_id;
+	int pseudo_mm_id;
 	long err = 0;
 	long phy_addr = 0;
 	pid_t pid;
@@ -276,6 +285,11 @@ static long pseudo_mm_unlocked_ioctl(struct file *filp, unsigned int cmd,
 		break;
 	case PSEUDO_MM_IOC_ADD_PAGE_TO_POOL:
 		err = _add_page((void *)args);
+		if (err)
+			return err;
+		break;
+	case PSEUDO_MM_IOC_UPDATE_ALL:
+		err = _pseudo_mm_update_all((void *)args);
 		if (err)
 			return err;
 		break;

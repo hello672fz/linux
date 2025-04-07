@@ -3455,6 +3455,32 @@ static vm_fault_t wp_page_shared(struct vm_fault *vmf)
 	return ret;
 }
 
+void format_pte_flags(unsigned long addr, pte_t pte, char *buf, size_t buf_size)
+{
+    unsigned long flags = pte_flags(pte);
+    int len = 0;
+
+    len += scnprintf(buf + len, buf_size - len, "addr: %#lx (V), pte %#lx [", addr, pte_val(pte));
+    len += scnprintf(buf + len, buf_size - len, " %#lx", pte_pfn(pte));
+
+    if (flags & _PAGE_PRESENT)   len += scnprintf(buf + len, buf_size - len, " PRESENT");
+    if (flags & _PAGE_RW)        len += scnprintf(buf + len, buf_size - len, " RW");
+    if (flags & _PAGE_USER)      len += scnprintf(buf + len, buf_size - len, " USER");
+    if (flags & _PAGE_ACCESSED)  len += scnprintf(buf + len, buf_size - len, " ACCESSED");
+    if (flags & _PAGE_DIRTY)     len += scnprintf(buf + len, buf_size - len, " DIRTY");
+    if (flags & _PAGE_PSE)       len += scnprintf(buf + len, buf_size - len, " HUGE");
+    if (flags & _PAGE_GLOBAL)    len += scnprintf(buf + len, buf_size - len, " GLOBAL");
+    if (flags & _PAGE_NX)        len += scnprintf(buf + len, buf_size - len, " NX");
+    if (flags & _PAGE_SPECIAL)   len += scnprintf(buf + len, buf_size - len, " SPECIAL");
+    if (flags & _PAGE_DEVMAP)    len += scnprintf(buf + len, buf_size - len, " DEVMAP");
+
+    len += scnprintf(buf + len, buf_size - len, " ]");
+}
+
+#define PTE_FLAGS_STR(addr, pte) \
+    ({ static char __buf[256]; format_pte_flags(addr, pte, __buf, sizeof(__buf)); __buf; })
+
+
 /*
  * This routine handles present pages, when
  * * users try to write to a shared page (FAULT_FLAG_WRITE)
@@ -3483,9 +3509,12 @@ static vm_fault_t do_wp_page(struct vm_fault *vmf)
 	const bool unshare = vmf->flags & FAULT_FLAG_UNSHARE;
 	struct vm_area_struct *vma = vmf->vma;
 	struct folio *folio;
+	int is_pseudo_mm_dax_fault;
 
 	VM_BUG_ON(unshare && (vmf->flags & FAULT_FLAG_WRITE));
 	VM_BUG_ON(!unshare && !(vmf->flags & FAULT_FLAG_WRITE));
+
+	is_pseudo_mm_dax_fault = vma_is_pseudo_mm(vma);
 
 	if (likely(!unshare)) {
 		if (userfaultfd_pte_wp(vma, *vmf->pte)) {
@@ -3598,6 +3627,10 @@ copy:
 	if (PageKsm(vmf->page))
 		count_vm_event(COW_KSM);
 #endif
+
+	if(is_pseudo_mm_dax_fault){
+		pr_info("[pseudo_mm] pid %d, wp_page_copy at %s\n", current->pid, PTE_FLAGS_STR(vmf->address, vmf->orig_pte));
+	}
 	return wp_page_copy(vmf);
 }
 
