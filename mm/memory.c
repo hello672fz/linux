@@ -3656,7 +3656,9 @@ unsigned long pseudo_mm_bring_back_single_page(
 				vaddr & PAGE_MASK,
 				(vaddr & PAGE_MASK) + PAGE_SIZE);
 	mmu_notifier_invalidate_range_start(&range);
+	
 	inc_mm_counter_fast(mm, MM_ANONPAGES);
+	
 	flush_cache_page(vma, vaddr, pte_pfn(*pte));
 	entry = mk_pte(new_page, vma->vm_page_prot);
 	entry = pte_sw_mkyoung(entry);
@@ -3747,8 +3749,11 @@ unsigned long pseudo_mm_update_single_page(
 				vaddr & PAGE_MASK,
 				(vaddr & PAGE_MASK) + PAGE_SIZE);
 	mmu_notifier_invalidate_range_start(&range);
-	
-	inc_mm_counter_fast(mm, MM_ANONPAGES);
+
+	// avoid multi update for a same page
+	if(!PageAnon(old_page)){
+		inc_mm_counter_fast(mm, MM_ANONPAGES);
+	}
 
 	flush_cache_page(vma, vaddr, pte_pfn(*pte));
 	entry = mk_pte(new_page, vma->vm_page_prot);
@@ -3757,6 +3762,7 @@ unsigned long pseudo_mm_update_single_page(
 	entry = maybe_mkwrite(entry, vma);
 
 	ptep_clear_flush_notify(vma, vaddr, pte);
+	page_remove_rmap(old_page, vma, false);
 	page_add_new_anon_rmap(new_page, vma, vaddr);
 	lru_cache_add_inactive_or_unevictable(new_page, vma);
 	set_pte_at_notify(mm, vaddr, pte, entry);
